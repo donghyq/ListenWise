@@ -354,7 +354,7 @@ function renderProjectDetail() {
     : [['materials', '1 素材', state.materials], ['structure', '2 大纲', state.structure]];
   if (!directListening) {
     if (verificationStep) tabs.push(['tasks', verificationStep + ' ' + (data.project.verification_mode === 'external_verify' ? '核验与来源' : '表述核对'), state.verification]);
-    tabs.push(['narrative', narrativeStep + ' ' + scenario.narrativeLabel, state.narrative]);
+    tabs.push(['narrative', narrativeStep + ' 章节与讲稿', state.narrative]);
     if (data.project.audio_enabled) tabs.push(['audio', audioStep + ' 音频与导出', state.audio]);
   }
   if (!tabs.some(item => item[0] === appState.activeTab)) appState.activeTab = 'materials';
@@ -891,7 +891,8 @@ function renderStructurePanel() {
   const currentPlan = appState.activePlan;
   const planPanel = '<section class="panel-card"><p class="eyebrow">第一步 · 划分学习章节</p><h3>把材料分成适合碎片学习的章节</h3><p>每一章会单独成稿、可单独收听，适合通勤、间隙时间逐章推进。通常按材料目录自动划分即可；目录复杂或只想学部分章节时再手动挑选。</p><div class="plan-settings"><div class="field"><label>源材料<select id="plan-document">' + docs.map(doc => '<option value="' + doc.id + '" ' + (doc.id === (currentPlan?.document_id || defaultDocId) ? 'selected' : '') + '>' + escapeHtml(doc.original_name) + '</option>').join('') + '</select></label></div></div><div class="plan-actions"><button class="button button-primary" id="auto-split-plan">自动划分章节</button><button class="button button-outline" id="toggle-heading-picker">手动挑选目录章节</button></div><div id="plan-heading-selector" class="plan-heading-selector" hidden></div>' + (currentPlan ? '<div class="plan-selected-chapters"><h4>' + (currentPlan.status === 'confirmed' ? '已确认的章节' : '待确认的章节') + '</h4><p class="form-note">可修改标题、取消不需要的章节；改动后请重新确认，并在下方重新建立写作大纲。</p><div id="chapter-list" class="chapter-list">' + renderChapters(currentPlan.chapters) + '</div>' + (function(){ const total = currentPlan.chapters.length; const enabled = currentPlan.chapters.filter(c => c.enabled).length; return '<div class="plan-confirm-bar"><div class="plan-confirm-summary"><strong>已选 ' + enabled + ' / ' + total + ' 章</strong><span>' + (enabled === total ? '保持默认即可直接确认' : '已取消的章节不会生成内容') + '</span></div><button class="button button-primary" id="confirm-plan">' + (currentPlan.status === 'confirmed' ? '保存结构调整' : '确认章节结构') + '</button></div>'; })() + '</div>' : '') + '</section>';
 
-  panel.innerHTML = planPanel + '<section class="panel-card"><p class="eyebrow">第二步 · 生成写作大纲</p><h3>章节确认后自动生成大纲</h3>' +
+  const feedbackOutline = outlines.find(item => item.id === appState.structureFeedbackOutline) || outlines[0];
+  panel.innerHTML = renderOutlineFeedback(feedbackOutline) + planPanel + '<section class="panel-card"><p class="eyebrow">第二步 · 生成写作大纲</p><h3>章节确认后自动生成大纲</h3>' +
     '<p class="form-note">' + (currentPlan?.status === 'confirmed' ? '已根据你确认的章节自动生成写作大纲，下方可直接检查。' : '确认上方章节后会自动生成写作大纲，通常无需手动操作。') + '</p>' +
     '<details class="outline-advanced" id="outline-advanced"><summary>生成前调整参数（可选）</summary>' +
     '<div class="narrative-form"><div class="field"><label>讲稿标题</label><input id="narrative-title" value="' + escapeHtml(defaultDocument.original_name.replace(/\.[^.]+$/, '')) + '" />' + (defaultChapter ? '<small class="field-hint">默认为素材标题；整份讲稿不要沿用某一章的标题。</small>' : '') + '</div>' +
@@ -906,6 +907,7 @@ function renderStructurePanel() {
     '<div class="narrative-outline-area" id="narrative-outline-area"><h3>大纲</h3><p class="form-note">尚未生成大纲。请确认已在“模型设置”中配置模型服务，并允许发送原始材料。</p><div style="margin-top:10px;"><button class="button button-outline button-small" id="open-settings-narrative">打开模型设置</button></div></div></section>';
 
   $('#create-narrative-outline').addEventListener('click', createNarrativeOutline);
+  bindOutlineFeedback(feedbackOutline);
   $('#auto-split-plan').addEventListener('click', () => createLearningPlan({ auto: true }));
   $('#toggle-heading-picker').addEventListener('click', () => {
     const selector = $('#plan-heading-selector');
@@ -966,8 +968,8 @@ function renderNarrativeOutputPanel() {
   const learningStats = (() => { let total = 0, done = 0; contents.forEach(content => { const reading = readingSections(content.markdown || ''); total += reading.length; const completed = new Set((content.reading_progress || {}).completed_section_ids || []); reading.forEach(section => { if (completed.has(section.id)) done += 1; }); }); return { total, done }; })();
   const learningSummary = learningStats.total ? '<p class="form-note">碎片学习进度：已学 ' + learningStats.done + ' / ' + learningStats.total + ' 节' + (learningStats.done < learningStats.total ? '，从上次停下的地方继续即可。' : '，全部完成。') + '</p>' : '';
 
-  panel.innerHTML = (contents.length ? '' : '<section class="panel-card"><h3>生成' + scenario.narrativeLabel + '</h3><p>大纲已确认。生成后可整篇阅读、逐节重写、人工修改并导出 DOCX。</p><p class="form-note" id="generation-status">点击下方按钮开始逐节写作；写作过程中这里会显示当前进度。</p><div class="plan-actions"><button class="button button-primary" data-generate-from-outline="' + confirmedOutline.id + '">逐节生成' + escapeHtml(scenario.narrativeLabel) + '</button></div></section>') +
-    '<section class="panel-card"><h3>已生成的' + scenario.narrativeLabel + '</h3>' + learningSummary + '<div class="narrative-content-list">' + (contents.length ? contents.map(renderNarrativeContentCard).join('') : '<p class="form-note">尚未生成讲稿。</p>') + '</div></section>' +
+  panel.innerHTML = (contents.some(content => content.outline_id === confirmedOutline.id) ? '' : '<section class="panel-card"><h3>' + (contents.length ? '按新大纲生成新版本' : '生成' + scenario.narrativeLabel) + '</h3><p>大纲已确认。生成后可逐章查看正文与音频、提出修改意见。' + (contents.length ? '已有讲稿会保留，可对照新版本。' : '') + '</p><p class="form-note" id="generation-status">点击下方按钮开始逐节写作；写作过程中这里会显示当前进度。</p><div class="plan-actions"><button class="button button-primary" data-generate-from-outline="' + confirmedOutline.id + '">逐节生成' + escapeHtml(scenario.narrativeLabel) + '</button></div></section>') +
+    '<section class="panel-card"><div class="narrative-content-list">' + (contents.length ? renderNarrativeContentCard(contents[0]) + contents.slice(1).map(content => '<details class="previous-content"><summary>较早版本：' + escapeHtml(content.title) + ' · ' + formatDate(content.created_at) + '</summary>' + renderNarrativeContentCard(content) + '</details>').join('') : '<p class="form-note">尚未生成讲稿。</p>') + '</div></section>' +
     '<details class="panel-card optional-path"><summary>也可以交给外部 AI 助手写稿，再粘贴回本地审阅</summary><div class="optional-path-body"><p>无需配置模型密钥。声息只复制当前材料块与写作要求；你在任意 AI 助手（如 ChatGPT、千问）生成 Markdown 后，粘贴回本地即可。</p><div class="handoff-actions"><button class="button button-outline" id="copy-chatgpt-prompt">复制给 AI 助手</button><button class="button button-primary" id="open-chatgpt-import">粘贴 AI 成稿</button></div></div></details>';
 
   $('[data-generate-from-outline]')?.addEventListener('click', event => generateNarrative(confirmedOutline.id, event.currentTarget));
@@ -1030,14 +1032,26 @@ async function openChatGPTImport() {
 }
 
 function bindNarrativeContentEvents() {
+  bindChapterWorkbench();
   $$('[data-confirm-narrative]').forEach(button => button.addEventListener('click', () => confirmNarrativeContent(button.dataset.confirmNarrative, button)));
   $$('[data-toggle-narrative-view]').forEach(button => button.addEventListener('click', () => {
     const id = button.dataset.toggleNarrativeView;
+    if (hasUnsavedChapterEdits(id)) { showMessage('请先保存本章编辑，或决定是否采用候选稿，再编辑整篇。', true); return; }
+    const editor = $('[data-narrative-editor="' + id + '"]');
+    const content = appState.selectedProject.narrative_contents.find(c => c.id === id);
+    if (editor && editor.value !== content.markdown) { showMessage('请先保存整篇编辑，或点击“放弃改动”。', true); return; }
     appState.narrativeEditing = appState.narrativeEditing || {};
     appState.narrativeEditing[id] = !appState.narrativeEditing[id];
-    renderNarrativeOutputPanel();
+    appState.activeTab = 'narrative';
+    renderProjectDetail();
   }));
   $$('[data-export-narrative]').forEach(button => button.addEventListener('click', () => exportNarrative(button.dataset.exportNarrative, button)));
+  $$('[data-narrative-editor]').forEach(editor => editor.addEventListener('input', () => { appState.wholeDrafts[editor.dataset.narrativeEditor] = editor.value; }));
+  $$('[data-discard-whole]').forEach(button => button.addEventListener('click', () => {
+    delete appState.wholeDrafts[button.dataset.discardWhole];
+    appState.narrativeEditing[button.dataset.discardWhole] = false;
+    renderActivePanel();
+  }));
   $$('[data-save-narrative]').forEach(button => button.addEventListener('click', () => saveNarrative(button.dataset.saveNarrative, button)));
   $$('[data-regenerate-section]').forEach(button => button.addEventListener('click', () => regenerateSection(button.dataset.regenerateSection, button.dataset.sectionId, button)));
   $$('[data-export-section]').forEach(button => button.addEventListener('click', () => exportSection(button.dataset.exportSection, button.dataset.sectionId, button)));
@@ -1117,10 +1131,7 @@ function renderNarrativeOutline(record) {
     }));
     $('#confirm-narrative-outline')?.addEventListener('click', () => confirmNarrativeOutline(record));
   } else {
-    $('#reedit-narrative-outline')?.addEventListener('click', () => {
-      record.status = 'draft';
-      renderNarrativeOutline(record);
-    });
+    $('#reedit-narrative-outline')?.addEventListener('click', event => copyOutlineForEditing(record, event.currentTarget));
     $('[data-generate-narrative]')?.addEventListener('click', event => generateNarrative(record.id, event.currentTarget));
   }
 }
@@ -1264,50 +1275,11 @@ function markdownSections(markdown = '') {
 }
 
 function renderNarrativeContentCard(content) {
-  appState.narrativeEditing = appState.narrativeEditing || {};
-  appState.readingFocus = appState.readingFocus || {};
-  const isEditing = !!appState.narrativeEditing[content.id];
-  const viewToggleText = isEditing ? '👁️ 查看排版' : '✏️ 修改正文';
-
-  const reading = readingSections(content.markdown);
-  const progress = content.reading_progress || { last_section_id: '', completed_section_ids: [] };
-  const completed = new Set(progress.completed_section_ids || []);
-  const doneCount = reading.filter(section => completed.has(section.id)).length;
-  const lastIndex = reading.findIndex(section => section.id === progress.last_section_id);
-  const resume = lastIndex >= 0 && !completed.has(reading[lastIndex].id) ? reading[lastIndex]
-    : reading.slice(lastIndex + 1).find(section => !completed.has(section.id))
-      || reading.find(section => !completed.has(section.id)) || reading[Math.max(lastIndex, 0)];
-
-  // 侧边章节目录：始终可见，点击进入单章阅读，随时可回目录
-  const focusId = appState.readingFocus[content.id] || '';
-  const focused = reading.find(section => section.id === focusId);
-  const toc = '<aside class="reading-toc"><div class="reading-toc-head"><div><b>章节目录</b><small>已学 ' + doneCount + ' / ' + reading.length + ' 节</small></div><button class="button button-primary button-small" data-resume-learning="' + content.id + '" data-section-id="' + resume.id + '">继续学习</button></div><div class="reading-toc-list">' + reading.map((section, index) => '<button class="reading-toc-item ' + (section.id === focusId ? 'active' : '') + (completed.has(section.id) ? ' done' : '') + '" data-focus-section="' + content.id + '" data-section-id="' + section.id + '"><span>' + String(index + 1).padStart(2, '0') + '</span><em>' + escapeHtml(section.heading) + '</em>' + (completed.has(section.id) ? '<i>✓</i>' : '') + '</button>').join('') + '</div></aside>';
-
-  let bodyContent;
-  if (isEditing) {
-    bodyContent = '<textarea class="narrative-editor" data-narrative-editor="' + content.id + '">' + escapeHtml(content.markdown) + '</textarea>';
-    // 编辑模式下无目录列，避免编辑区被挤进 250px 侧栏列。
-    bodyContent = '<div class="reading-layout reading-editing"><div class="reading-main">' + bodyContent + '</div></div>';
-  } else if (focused) {
-    const index = reading.indexOf(focused);
-    const prev = reading[index - 1], next = reading[index + 1];
-    const nav = '<div class="reading-focus-nav"><button class="button button-outline button-small" data-focus-section="' + content.id + '" data-section-id="">← 返回目录</button>' + (prev ? '<button class="button button-outline button-small" data-focus-section="' + content.id + '" data-section-id="' + prev.id + '">← 上一节</button>' : '') + (next ? '<button class="button button-outline button-small" data-focus-section="' + content.id + '" data-section-id="' + next.id + '">下一节 →</button>' : '') + '<span class="reading-nav-spacer"></span><button class="button button-quiet button-small" data-regenerate-section="' + content.id + '" data-section-id="' + focused.id + '">重做本节</button><button class="button button-quiet button-small" data-export-section="' + content.id + '" data-section-id="' + focused.id + '">导出本节</button><button class="button button-primary button-small" data-toggle-learning-complete="' + content.id + '" data-section-id="' + focused.id + '" data-completed="' + completed.has(focused.id) + '">' + (completed.has(focused.id) ? '✓ 已学' : '标记已学') + '</button></div>';
-    bodyContent = '<div class="reading-focus">' + nav + '<div class="narrative-article">' + renderNarrativeHtml(focused.text, content.id) + '</div>' + nav + '</div>';
-  } else {
-    bodyContent = '<div class="narrative-article">' + renderNarrativeHtml(content.markdown, content.id) + '</div>';
-  }
-  // 目录列：查看/单章聚焦时始终可见；编辑模式或单节内容不显示
-  if (!isEditing && reading.length > 1) {
-    bodyContent = '<div class="reading-layout">' + toc + '<div class="reading-main">' + bodyContent + '</div></div>';
-  }
-
-  const model = content.model || {};
-  const floorText = model.output_floor ? ('长度检查：' + model.output_chars + ' / ' + model.output_floor + ' 字 · ' + (model.floor_status === 'pass' ? '通过' : '建议复核')) : '长度检查：未启用';
-  const researchText = model.web_research_mode === 'augment' ? '联网：已选来源可补充' : model.web_research_mode === 'off' ? '联网：关闭' : '联网：仅发现候选来源';
-const sectionOps = (content.section_sources || []).map((section, index) => '<div class="section-ops-row"><span class="section-ops-name">' + String(index + 1).padStart(2, '0') + '. ' + escapeHtml(section.heading || '未命名章节') + '</span><span class="section-ops-buttons"><button class="button button-quiet button-small" data-regenerate-section="' + content.id + '" data-section-id="' + escapeHtml(section.section_id) + '">重做本节</button><button class="button button-quiet button-small" data-export-section="' + content.id + '" data-section-id="' + escapeHtml(section.section_id) + '">导出本节</button></span></div>').join('');
-  const scenario = SCENARIOS[appState.selectedProject.project.scenario] || SCENARIOS.topic_learning;
-  const reviewNote = content.review_note || '请核对讲稿与材料的一致性。确认后再用于正式交付；长度检查只用于提醒。';
-  return '<article class="narrative-content-card"><div class="content-card-header"><div><p class="doc-kicker">' + escapeHtml(scenario.narrativeLabel) + ' · ' + statusText(content.status) + '</p><h3>' + escapeHtml(content.title) + '</h3><small>模型：' + escapeHtml(model.model_name || '未记录') + ' · <span class="status ' + content.status + '">' + statusText(content.status) + '</span> · ' + escapeHtml(floorText) + ' · ' + escapeHtml(researchText) + '</small></div><div class="detail-actions"><button class="button button-outline button-small" data-toggle-narrative-view="' + content.id + '">' + viewToggleText + '</button><button class="button button-outline button-small" data-confirm-narrative="' + content.id + '">确认审阅</button><button class="button button-outline button-small" data-export-narrative="' + content.id + '">导出 ' + (content.status === 'confirmed' ? 'DOCX' : '审阅稿') + '</button>' + (isEditing ? '<button class="button button-primary button-small" data-save-narrative="' + content.id + '">保存修改</button>' : '') + '</div></div>' + bodyContent + '<div class="review-bar"><span class="review-note">' + escapeHtml(reviewNote) + '</span><details class="section-ops"><summary>按节重做 / 导出（共 ' + (content.section_sources || []).length + ' 节）</summary><div class="section-ops-list">' + sectionOps + '</div></details></div></article>';
+  appState.narrativeEditing ||= {};
+  appState.wholeDrafts ||= {};
+  if (!appState.narrativeEditing[content.id]) return renderChapterWorkbench(content);
+  const markdown = appState.wholeDrafts[content.id] ?? content.markdown;
+  return '<article class="narrative-content-card"><div class="content-card-header"><div><h3>' + escapeHtml(content.title) + '</h3><p class="form-note">编辑整篇 Markdown。调整章节划分时，建议先修改大纲；保存整篇改动后，音频需要重新生成。</p></div><div class="detail-actions"><button class="button button-outline button-small" data-toggle-narrative-view="' + content.id + '">返回章节</button><button class="button button-outline button-small" data-discard-whole="' + content.id + '">放弃改动</button><button class="button button-primary button-small" data-save-narrative="' + content.id + '">保存整篇</button></div></div><textarea class="narrative-editor" data-narrative-editor="' + content.id + '">' + escapeHtml(markdown) + '</textarea></article>';
 }
 
 async function saveNarrative(contentId, button) {
@@ -1316,7 +1288,10 @@ async function saveNarrative(contentId, button) {
   try {
     setBusy(button, true, '保存中…');
     await request('/api/narrative-contents/' + contentId, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ markdown: editor.value, review_note: '已保存人工审阅修改。', status: 'needs_revision' }) });
+    delete appState.wholeDrafts[contentId];
+    appState.narrativeEditing[contentId] = false;
     appState.selectedProject = await request('/api/projects/' + appState.selectedProject.project.id);
+    renderActivePanel();
     showMessage('长文修改已保存。');
   } catch (error) { showMessage(error.message, true); } finally { setBusy(button, false); }
 }
@@ -1342,7 +1317,14 @@ function renderAudioPanel() {
   const sendMobile = outputs.some(item => item.audio_available) ? '<details class="panel-card audio-extra" id="mobile-share-card"><summary>发送到手机收听</summary><p>生成一次性领取链接后，用手机相机扫码，即可在同一 Wi-Fi 下按章收听和下载。链接只在声息运行时可访问，可随时吊销。</p><div class="audio-tool-actions"><button class="button button-outline button-small" id="create-mobile-share">生成二维码</button><button class="button button-quiet button-small" id="revoke-mobile-share">吊销已生成的链接</button></div><div id="mobile-share-result" class="mobile-share-result"></div></details>' : '';
   const sourceCard = contents.length ? '<details class="panel-card audio-extra"' + (outputs.length ? '' : ' open') + '><summary>从已确认讲稿制作新音频</summary><p>可制作整篇音频，也可逐章制作。未确认的讲稿可先整理脚本试听。</p><label class="audio-naturalize"><input type="checkbox" id="naturalize-audio"/><span>使用文本模型改善口语节奏<span class="audio-naturalize-note">额外调用一次模型；生成后仍需核对事实</span></span></label><div class="audio-source-list">' + contents.map(renderAudioSourceRow).join('') + '</div></details>' : '';
   const empty = contents.length ? '请在下方选择讲稿，先生成音频脚本。' : '还没有音频。返回“素材”可选择原文朗读。';
-  panel.innerHTML = '<section class="panel-card audio-intro"><p class="eyebrow">收听与导出</p><h3>先试听，再保存音频</h3><p>已有音频可直接播放和导出。原文朗读保留文章内容；整理后的讲稿可以制作整篇或分章音频。</p></section><section class="panel-card"><h3>我的音频</h3><div class="audio-output-list">' + (outputs.length ? renderAudioGroups(outputs) : '<p class="form-note">' + empty + '</p>') + '</div></section>' + sendMobile + mobileGuide + sourceCard + audiobookCard;
+  const standalone = outputs.filter(output => {
+    const content = contents.find(c => c.id === output.narrative_content_id);
+    if (!content) return true;
+    return !(content.chapters || []).some(chapter => output.title === content.title + ' · ' + chapter.heading || ((content.chapters.length === 1 || chapter.heading === content.title) && output.title === content.title));
+  });
+  const chapterBooks = contents.length ? '<section class="panel-card"><h3>按章收听与查看讲稿</h3>' + renderChapterWorkbench(contents[0]) + contents.slice(1).map(content => '<details class="previous-content"><summary>较早版本：' + escapeHtml(content.title) + '</summary>' + renderChapterWorkbench(content) + '</details>').join('') + '</section>' : '';
+  panel.innerHTML = '<section class="panel-card audio-intro"><h3>正文与声音，按章节放在一起</h3><p>点击目录即可查看这一章的讲稿与音频。文字修改后，可在同一处更新本章音频。</p></section>' + chapterBooks + (standalone.length ? '<section class="panel-card"><h3>原文朗读与整篇音频</h3><div class="audio-output-list">' + renderAudioGroups(standalone) + '</div></section>' : contents.length ? '' : '<section class="panel-card"><p>' + empty + '</p></section>') + sendMobile + mobileGuide + sourceCard + audiobookCard;
+  bindNarrativeContentEvents();
   const createShare = $('#create-mobile-share'); if (createShare) createShare.addEventListener('click', () => createMobileShare(createShare));
   const revokeShare = $('#revoke-mobile-share'); if (revokeShare) revokeShare.addEventListener('click', () => revokeMobileShare(revokeShare));
   $$('[data-save-audio]').forEach(button => button.addEventListener('click', () => saveAudioScript(button.dataset.saveAudio, button)));
@@ -2118,6 +2100,8 @@ async function confirmNarrativeContent(id, button) {
     const content = appState.selectedProject.narrative_contents.find(item => item.id === id);
     const editor = $('[data-narrative-editor="' + id + '"]');
     if (editor && editor.value !== content.markdown) throw new Error('请先保存正文修改，再确认审阅。');
+    if (appState.wholeDrafts?.[id] != null && appState.wholeDrafts[id] !== content.markdown) throw new Error('整篇有未保存的编辑，请先回到“编辑整篇”保存或放弃改动。');
+    if (hasUnsavedChapterEdits(id)) throw new Error('请先保存本章编辑，或决定是否采用候选稿，再确认讲稿。');
     setBusy(button, true);
     await request('/api/narrative-contents/' + id, {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({markdown:content.markdown, status:'confirmed', review_note:'用户已确认讲稿审阅；核验任务状态单独管理。'})});
     appState.selectedProject = await request('/api/projects/' + appState.selectedProject.project.id);

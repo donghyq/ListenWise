@@ -22,7 +22,7 @@ description: Use a local LawFlow app to turn legal materials and selected public
 4. 调用 `PUT /api/narrative-outlines/{outline_id}/confirm`，再调用 `POST /api/narrative-outlines/{outline_id}/contents` 生成讲稿。
 5. 成稿由用户确认后，调用 `POST /api/projects/{project_id}/audio-scripts` 生成口播脚本；最终 MP3 只能基于已确认讲稿生成。若用户希望按章节碎片时间收听，在同一接口传入 `section_heading`（讲稿中的二级标题），只整理该章节。
 6. 通过 `POST /api/narrative-contents/{content_id}/export` 导出 Markdown 与 DOCX。
-7. 如果只需返工一节，调用 `POST /api/narrative-contents/{content_id}/sections/{section_id}/regenerate`；确认章节来源映射未丢失后，可调用同路径的 `/export` 单独导出该节。
+7. 如果用户指出某一章不合适，先从项目详情的 `narrative_contents[].chapters` 读取稳定章节 `id`、正文和 `version`。调用 `POST /api/narrative-contents/{content_id}/sections/{section_id}/revision`，传入用户的 `instructions` 与 `base_version`，取得候选稿。展示修改前后内容，用户同意采用后再调用 `PUT /api/narrative-contents/{content_id}/sections/{section_id}`，传入候选稿 `body`、`base_version` 和 `instructions`。正文修改后需要重新确认讲稿，改动章节的音频也需要更新。同路径的 `/export` 可单独导出该节。
 8. 写作画像可通过 `GET /api/narrative/profiles/{profile_id}/export` 导出 Markdown，也可通过 `POST /api/narrative/profiles/import` 导入为新的自定义画像。
 
 ## 宿主模型模式

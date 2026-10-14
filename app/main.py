@@ -330,6 +330,8 @@ class NarrativeOutlineRequest(BaseModel):
     minimum_output_mode: Literal["auto", "none", "custom"] = "auto"
     minimum_output_ratio: float = Field(default=0.3, ge=0.1, le=1.0)
     web_research_mode: Literal["off", "discover", "augment"] = "discover"
+    revision_of: str = ""
+    revision_instructions: str = Field(default="", max_length=3000)
 
 
 class NarrativeOutlineConfirm(BaseModel):
@@ -348,6 +350,17 @@ class NarrativeContentUpdate(BaseModel):
     markdown: str = Field(min_length=1)
     review_note: str = ""
     status: Literal["draft", "pending_review", "confirmed", "needs_revision", "discarded"] = "needs_revision"
+
+
+class SectionRevisionRequest(BaseModel):
+    instructions: str = Field(min_length=1, max_length=3000)
+    base_version: str = Field(min_length=1)
+
+
+class SectionTextUpdate(BaseModel):
+    body: str = Field(min_length=1, max_length=60000)
+    base_version: str = Field(min_length=1)
+    instructions: str = Field(default="", max_length=3000)
 
 
 class LearningProgressUpdate(BaseModel):
@@ -1804,7 +1817,7 @@ def normalize_narrative_outline(raw: dict, request: NarrativeOutlineRequest, blo
     }
 
 
-def create_narrative_outline(request: NarrativeOutlineRequest, blocks: list[dict]) -> dict:
+def create_narrative_outline(request: NarrativeOutlineRequest, blocks: list[dict], previous_outline: dict | None = None) -> dict:
     profile = get_style_profiles().get(request.style_profile)
     if profile is None:
         raise HTTPException(status_code=400, detail="未知的写作风格画像。")
@@ -1844,6 +1857,10 @@ def create_narrative_outline(request: NarrativeOutlineRequest, blocks: list[dict
 
     已选材料：
 {dossier}""".format(scenario=scenario["name"], audience=request.audience, title=request.title, duration=max(1, round(target_words / 240)), words=target_words, transform_name=transform["name"], transform_description=transform["description"], verification_name=verification["name"], verification_description=verification["description"], research_instruction=research_instruction, quality_rules=scenario_quality_rules(request.scenario), style=profile["instruction"], allowed_ids="\n".join(block["id"] for block in blocks if block["kind"] != "heading"), dossier=dossier)
+    if request.revision_instructions.strip():
+        prompt += "\n\n当前大纲（供调整章节划分和顺序）：\n" + json.dumps(previous_outline or {}, ensure_ascii=False)
+        prompt += "\n用户的结构调整意见：\n" + request.revision_instructions.strip()
+        prompt += "\n请按意见重新规划章节，可以合并或拆分章节。仍须遵守材料边界，返回完整的新大纲，等待用户确认。"
     raw = model_chat([{"role": "system", "content": "你严格遵守材料边界，并只返回可解析 JSON。"}, {"role": "user", "content": prompt}], temperature=0.25, max_tokens=3600)
     return normalize_narrative_outline(parse_model_json(raw), request, blocks)
 
@@ -2490,13 +2507,13 @@ def get_project(project_id: str):
     docs = [dict(row) for row in conn.execute("SELECT * FROM source_documents WHERE project_id = ? ORDER BY created_at DESC", (project_id,)).fetchall()]
     plans = [dict(row) for row in conn.execute("SELECT * FROM content_plans WHERE project_id = ? ORDER BY updated_at DESC", (project_id,)).fetchall()]
     contents = [dict(row) for row in conn.execute("SELECT * FROM generated_contents WHERE project_id = ? ORDER BY updated_at DESC", (project_id,)).fetchall()]
-    narrative_outlines = [dict(row) for row in conn.execute("SELECT * FROM narrative_outlines WHERE project_id = ? ORDER BY updated_at DESC", (project_id,)).fetchall()]
-    narrative_contents = [dict(row) for row in conn.execute("SELECT * FROM narrative_contents WHERE project_id = ? ORDER BY updated_at DESC", (project_id,)).fetchall()]
+    narrative_outlines = [dict(row) for row in conn.execute("SELECT * FROM narrative_outlines WHERE project_id = ? ORDER BY updated_at DESC, rowid DESC", (project_id,)).fetchall()]
+    narrative_contents = [dict(row) for row in conn.execute("SELECT * FROM narrative_contents WHERE project_id = ? ORDER BY updated_at DESC, rowid DESC", (project_id,)).fetchall()]
     progress_by_content = {row["content_id"]: dict(row) for row in conn.execute(
         "SELECT progress.* FROM learning_progress AS progress JOIN narrative_contents AS content ON content.id = progress.content_id WHERE content.project_id = ?",
         (project_id,),
     ).fetchall()}
-    audio_outputs = [dict(row) for row in conn.execute("SELECT * FROM audio_outputs WHERE project_id = ? ORDER BY updated_at DESC", (project_id,)).fetchall()]
+    audio_outputs = [dict(row) for row in conn.execute("SELECT * FROM audio_outputs WHERE project_id = ? ORDER BY updated_at DESC, rowid DESC", (project_id,)).fetchall()]
     tasks = [dict(row) for row in conn.execute("SELECT * FROM tasks WHERE project_id = ? ORDER BY CASE risk_level WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, created_at DESC", (project_id,)).fetchall()]
     # 兼容改造前已确认的章节方案：旧项目可能尚未在确认时创建任务。
     # 首次打开此类项目时，按已确认的范围补建候选任务，避免用户重做章节方案。
@@ -2544,13 +2561,14 @@ def get_project(project_id: str):
         content["model"] = parse_json(content.pop("model_json"), {})
         saved_progress = progress_by_content.get(content["id"], {})
         available_sections = set(reading_section_ids(content["markdown"]))
+        content["chapters"] = narrative_chapters(content)
         content["reading_progress"] = {
             "last_section_id": saved_progress.get("last_section_id", "") if saved_progress.get("last_section_id") in available_sections else "",
             "completed_section_ids": [section_id for section_id in parse_json(saved_progress.get("completed_section_ids_json"), []) if section_id in available_sections],
             "updated_at": saved_progress.get("updated_at", ""),
         }
     for audio in audio_outputs:
-        audio["audio_available"] = bool(audio.get("audio_path")) and Path(audio["audio_path"]).is_file()
+        audio["audio_available"] = audio["status"] == "ready" and bool(audio.get("audio_path")) and Path(audio["audio_path"]).is_file()
     for task in tasks:
         task["evidence_block_ids"] = parse_json(task["evidence_block_ids"], [])
     return {"project": project, "documents": docs, "plans": plans, "contents": contents, "narrative_outlines": narrative_outlines, "narrative_contents": narrative_contents, "audio_outputs": audio_outputs, "tasks": tasks}
@@ -3357,7 +3375,21 @@ def create_narrative_outline_route(project_id: str, payload: NarrativeOutlineReq
             if not block["source_url"]:
                 raise HTTPException(400, "补充资料必须登记公开来源链接。")
             valid_public_url(block["source_url"])
-    outline = outline_from_confirmed_plan(payload, parse_json(plan["chapters_json"], []), blocks) if plan else create_narrative_outline(payload, blocks)
+    previous_outline = None
+    if payload.revision_of:
+        with db() as conn:
+            previous = conn.execute("SELECT * FROM narrative_outlines WHERE id = ? AND project_id = ?", (payload.revision_of, project_id)).fetchone()
+        if previous is None:
+            raise HTTPException(404, "要调整的大纲不属于当前项目。")
+        if set(parse_json(previous["source_block_ids_json"], [])) != set(payload.source_block_ids):
+            raise HTTPException(400, "结构调整须沿用原大纲的材料范围；更换材料时请新建大纲。")
+        if not payload.revision_instructions.strip():
+            raise HTTPException(400, "请说明章节划分或顺序需要怎样调整。")
+        previous_outline = parse_json(previous["outline_json"], {})
+    outline = outline_from_confirmed_plan(payload, parse_json(plan["chapters_json"], []), blocks) if plan and not payload.revision_instructions.strip() else create_narrative_outline(payload, blocks, previous_outline)
+    if payload.revision_of:
+        outline["revision_of"] = payload.revision_of
+        outline["revision_instructions"] = payload.revision_instructions.strip()
     outline["supplemental_sources"] = {document_id: [block["id"] for block in blocks if block["document_id"] == document_id and block["kind"] == "paragraph"] for document_id in supplemental_docs}
     outline_id = str(uuid.uuid4())
     timestamp = now_iso()
@@ -3371,6 +3403,23 @@ def create_narrative_outline_route(project_id: str, payload: NarrativeOutlineReq
     conn.commit()
     conn.close()
     return {"id": outline_id, "project_id": project_id, "document_id": payload.document_id, "title": outline["title"], "audience": payload.audience, "style_profile": payload.style_profile, "target_length": payload.target_length, "transform_mode": payload.transform_mode, "verification_mode": payload.verification_mode, "scenario": payload.scenario, "target_duration": payload.target_duration, "status": "draft", "outline": outline}
+
+
+@app.post("/api/narrative-outlines/{outline_id}/copy", status_code=201)
+def copy_narrative_outline(outline_id: str):
+    """调整已使用的大纲时另存草稿，已有讲稿继续引用原结构。"""
+    with db() as conn:
+        row = conn.execute("SELECT * FROM narrative_outlines WHERE id=?", (outline_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, "大纲不存在。")
+        if row["target_length"] not in NARRATIVE_LENGTHS:
+            raise HTTPException(400, "外部导入稿请基于原素材重新规划大纲。")
+        draft_id, timestamp = str(uuid.uuid4()), now_iso()
+        outline = parse_json(row["outline_json"], {})
+        outline["revision_of"] = outline_id
+        conn.execute("INSERT INTO narrative_outlines (id, project_id, document_id, source_plan_id, title, audience, style_profile, target_length, source_block_ids_json, outline_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)",
+                     (draft_id, row["project_id"], row["document_id"], row["source_plan_id"], row["title"], row["audience"], row["style_profile"], row["target_length"], row["source_block_ids_json"], json.dumps(outline, ensure_ascii=False), timestamp, timestamp))
+    return {"id": draft_id, "status": "draft", "outline": outline}
 
 
 @app.put("/api/narrative-outlines/{outline_id}/confirm")
@@ -3401,6 +3450,9 @@ def confirm_narrative_outline(outline_id: str, payload: NarrativeOutlineConfirm)
     try:
         outline = normalize_narrative_outline(outline, request, selected_blocks)
         outline["supplemental_sources"] = stored_outline.get("supplemental_sources", {})
+        for key in ("revision_of", "revision_instructions"):
+            if key in stored_outline:
+                outline[key] = stored_outline[key]
     except HTTPException as error:
         raise HTTPException(400, error.detail) from error
     conn = db()
@@ -3450,6 +3502,112 @@ def generate_narrative_content(outline_id: str):
     return {"id": content_id, "outline_id": outline_id, "title": outline["title"], "markdown": markdown, "section_sources": section_sources, "model": model_metadata, "status": "pending_review", "created_at": timestamp}
 
 
+def narrative_chapters(content) -> list[dict]:
+    """将章节正文与来源中的稳定章节 ID 对齐，供桌面编辑及音频定位。"""
+    content = dict(content)
+    markdown = collapse_duplicate_headings(content["markdown"])
+    sources = content.get("section_sources", parse_json(content.get("section_sources_json", "[]"), []))
+    matches = list(re.finditer(r"^##[ \t]+([^\n]+)\r?$", markdown, re.MULTILINE))
+    version = hashlib.sha256(markdown.encode()).hexdigest()
+    chapters = []
+    for index, match in enumerate(matches):
+        heading = match.group(1).strip()
+        matching = [s for s in sources if s.get("heading") == heading]
+        mapping = matching[0] if len(matching) == 1 and sum(m.group(1).strip() == heading for m in matches) == 1 else {}
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(markdown)
+        chapters.append({"id": mapping.get("section_id") or f"unmapped-section-{index + 1}", "reading_id": f"section-{index + 1}",
+                         "heading": heading, "body": markdown[match.end():end].strip(),
+                         "source_block_ids": mapping.get("source_block_ids", []), "version": version,
+                         "body_start": match.end(), "end": end})
+    if not chapters:
+        title = re.match(r"^#[ \t]+[^\n]+\n?", markdown)
+        start = title.end() if title else 0
+        mapping = sources[0] if len(sources) == 1 else {}
+        chapters = [{"id": mapping.get("section_id") or "section-1", "reading_id": "section-1", "heading": content["title"],
+                     "body": markdown[start:].strip(), "source_block_ids": mapping.get("source_block_ids", []),
+                     "version": version, "body_start": start, "end": len(markdown)}]
+    for chapter in chapters:
+        # 其他章的修改不阻止本章候选稿保存；同章的正文或来源变化则必须重新核对。
+        chapter["version"] = hashlib.sha256(json.dumps([chapter["id"], chapter["heading"], chapter["body"], chapter["source_block_ids"]], ensure_ascii=False).encode()).hexdigest()
+    return chapters
+
+
+def find_narrative_chapter(content, section_id: str) -> dict:
+    chapter = next((c for c in narrative_chapters(content) if c["id"] == section_id), None)
+    if chapter is None:
+        raise HTTPException(404, "未找到这章正文，请刷新后重试。")
+    return chapter
+
+
+@app.post("/api/narrative-contents/{content_id}/sections/{section_id}/revision")
+def preview_section_revision(content_id: str, section_id: str, payload: SectionRevisionRequest):
+    with db() as conn:
+        row = conn.execute("SELECT * FROM narrative_contents WHERE id = ?", (content_id,)).fetchone()
+        outline_row = conn.execute("SELECT * FROM narrative_outlines WHERE id = ?", (row["outline_id"],)).fetchone() if row else None
+    if row is None or outline_row is None:
+        raise HTTPException(404, "讲稿或对应的大纲不存在。")
+    chapter = find_narrative_chapter(row, section_id)
+    if payload.base_version != chapter["version"]:
+        raise HTTPException(409, "讲稿已更新，请刷新后基于最新正文提出修改意见。")
+    instructions = payload.instructions.strip()
+    if not instructions:
+        raise HTTPException(400, "请先说明本章哪里不合适，以及希望怎样调整。")
+    blocks = read_project_blocks(row["project_id"], chapter["source_block_ids"])
+    if not blocks or {b["id"] for b in blocks} != set(chapter["source_block_ids"]):
+        raise HTTPException(409, "本章材料范围已变化，请先检查原文依据。")
+    profile = get_style_profiles().get(outline_row["style_profile"], {})
+    prompt = "请根据用户意见修改一个章节，输出可直接审阅的 Markdown 正文，不输出章节标题、解释或代码围栏。\n"
+    prompt += "只使用下方选定材料支持的事实、数字、观点和限制条件，不得补充外部事实。保持当前章节主题；涉及合并、拆分章节时应在大纲中处理。\n"
+    prompt += f"章节标题：{chapter['heading']}\n目标读者：{outline_row['audience']}\n表达方式：{profile.get('instruction', '')}\n"
+    prompt += f"\n当前正文：\n{chapter['body']}\n\n用户修改意见：\n{instructions}\n\n原文依据：\n{source_dossier(blocks)}"
+    guidance = build_reviewer_guidance(row["project_id"])
+    if guidance:
+        prompt += "\n已确认的核对意见：\n" + guidance
+    revised = model_chat([{"role": "system", "content": "你是忠实于原文的内容编辑。用户意见用于调整表达，不能作为新事实来源。"}, {"role": "user", "content": prompt}], temperature=0.35, max_tokens=8000).strip()
+    revised = re.sub(r"^```(?:markdown|md)?\s*\n|\n```\s*$", "", revised)
+    revised = re.sub(r"^(?:#{1,2}[ \t]+[^\n]*\r?\n+)+", "", revised).strip()
+    if not revised or re.search(r"^#{1,2}[ \t]+", revised, re.MULTILINE):
+        raise HTTPException(502, "候选稿没有保持本章范围，请调整意见后重试。")
+    return {"content_id": content_id, "section_id": section_id, "heading": chapter["heading"], "original": chapter["body"],
+            "body": revised, "base_version": chapter["version"], "instructions": instructions}
+
+
+@app.put("/api/narrative-contents/{content_id}/sections/{section_id}")
+def save_narrative_section(content_id: str, section_id: str, payload: SectionTextUpdate):
+    body = payload.body.strip()
+    if not body or re.search(r"^#{1,2}[ \t]+", body, re.MULTILINE):
+        raise HTTPException(400, "请填写本章正文。章节标题或拆分方式请到大纲中调整。")
+    with db() as conn:
+        row = conn.execute("SELECT * FROM narrative_contents WHERE id = ?", (content_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, "讲稿不存在。")
+        chapter = find_narrative_chapter(row, section_id)
+        if payload.base_version != chapter["version"]:
+            raise HTTPException(409, "讲稿已更新，未覆盖新内容。请刷新后重新检查修改稿。")
+        current = collapse_duplicate_headings(row["markdown"])
+        updated = current[:chapter["body_start"]] + "\n\n" + body + ("\n\n" if chapter["end"] < len(current) else "") + current[chapter["end"]:]
+        if body == chapter["body"]:
+            return {"id": content_id, "section_id": section_id, "markdown": row["markdown"], "status": row["status"]}
+        timestamp = now_iso()
+        note = "已修改“{}”，请重新确认讲稿后更新这一章的音频。".format(chapter["heading"])
+        metadata = parse_json(row["model_json"], {})
+        metadata["last_section_revision"] = {"section_id": section_id, "instructions": payload.instructions, "updated_at": timestamp}
+        result = conn.execute("UPDATE narrative_contents SET markdown=?, status='needs_revision', review_note=?, model_json=?, updated_at=? WHERE id=? AND markdown=?",
+                              (updated, note, json.dumps(metadata, ensure_ascii=False), timestamp, content_id, row["markdown"]))
+        if result.rowcount != 1:
+            raise HTTPException(409, "讲稿已更新，请刷新后重试。")
+        # 只失效改动章节和整篇音频，其余章节可继续播放。
+        audio_titles = [row["title"], f"{row['title']} · {chapter['heading']}"]
+        conn.execute("UPDATE audio_outputs SET status='source_changed', updated_at=? WHERE narrative_content_id=? AND title IN (?, ?)",
+                     (timestamp, content_id, *audio_titles))
+        progress = conn.execute("SELECT completed_section_ids_json FROM learning_progress WHERE content_id=?", (content_id,)).fetchone()
+        if progress:
+            completed = [s for s in parse_json(progress[0], []) if s != chapter["reading_id"]]
+            conn.execute("UPDATE learning_progress SET completed_section_ids_json=?, updated_at=? WHERE content_id=?", (json.dumps(completed), timestamp, content_id))
+        conn.execute("UPDATE projects SET updated_at=? WHERE id=?", (timestamp, row["project_id"]))
+    return {"id": content_id, "section_id": section_id, "markdown": updated, "status": "needs_revision"}
+
+
 @app.post("/api/narrative-contents/{content_id}/sections/{section_id}/regenerate")
 def regenerate_narrative_section(content_id: str, section_id: str):
     with db() as conn:
@@ -3472,28 +3630,8 @@ def regenerate_narrative_section(content_id: str, section_id: str):
     single_outline = {**outline, "sections": [section], "title": outline.get("title", row["title"])}
     markdown, sources, metadata = generate_narrative_markdown(single_outline, blocks, outline_row["audience"], outline_row["style_profile"], outline.get("transform_mode", preferences["transform_mode"]), preferences["scenario"], max(1, round(section.get("target_words", 800) / 240)), outline.get("web_research_mode", preferences["web_research_mode"]), progress_key=row["outline_id"], reviewer_guidance=build_reviewer_guidance(row["project_id"]))
     generated = re.sub(r"^(?:#{1,6}[ \t]+[^\n]*\r?\n+)+", "", markdown.strip()).strip()
-    current = collapse_duplicate_headings(row["markdown"])
-    heading = "## " + section["heading"]
-    start = current.find(heading)
-    if start < 0:
-        # 标题可能与文首大标题重号被合并（# vs ##），按任意级别匹配；再找不到才报错
-        level_agnostic = re.compile(r"^#{1,6}\s*" + re.escape(section["heading"]) + r"\s*$", re.MULTILINE)
-        loose = level_agnostic.search(current)
-        if loose is None:
-            raise HTTPException(409, "原稿中未找到该章节，请重新生成整篇讲稿。")
-        start, heading = loose.start(), loose.group(0)
-    next_start = re.search(r"\n##\s+", current[start + len(heading):])
-    end = start + len(heading) + (next_start.start() if next_start else len(current) - start - len(heading))
-    replacement = heading + "\n\n" + generated
-    updated_markdown = current[:start] + replacement + current[end:]
-    metadata["regenerated_section_id"] = section_id
-    existing_sources = parse_json(row["section_sources_json"], [])
-    merged_sources = [sources[0] if item.get("section_id") == section_id and sources else item for item in existing_sources]
-    if not any(item.get("section_id") == section_id for item in merged_sources) and sources:
-        merged_sources.append(sources[0])
-    with db() as conn:
-        conn.execute("UPDATE narrative_contents SET markdown = ?, model_json = ?, section_sources_json = ?, status = 'needs_revision', review_note = ?, updated_at = ? WHERE id = ?", (updated_markdown, json.dumps(metadata, ensure_ascii=False), json.dumps(merged_sources, ensure_ascii=False), "已单独重新生成章节，需重新审阅。", now_iso(), content_id))
-    return {"id": content_id, "section_id": section_id, "markdown": updated_markdown, "status": "needs_revision"}
+    chapter = find_narrative_chapter(row, section_id)
+    return save_narrative_section(content_id, section_id, SectionTextUpdate(body=generated, base_version=chapter["version"]))
 
 
 @app.put("/api/narrative-contents/{content_id}")
@@ -3554,18 +3692,8 @@ def export_narrative_section(content_id: str, section_id: str):
         content = conn.execute("SELECT * FROM narrative_contents WHERE id = ?", (content_id,)).fetchone()
     if content is None:
         raise HTTPException(404, "知识转译成稿不存在。")
-    sources = parse_json(content["section_sources_json"], [])
-    section = next((item for item in sources if item.get("section_id") == section_id), None)
-    if section is None:
-        raise HTTPException(404, "章节不存在。")
-    heading = "## " + section["heading"]
-    markdown = collapse_duplicate_headings(content["markdown"])
-    start = markdown.find(heading)
-    if start < 0:
-        raise HTTPException(409, "原稿中未找到该章节。")
-    next_start = re.search(r"\n##\s+", markdown[start + len(heading):])
-    end = start + len(heading) + (next_start.start() if next_start else len(markdown) - start - len(heading))
-    section_markdown = mark_unreviewed_export(markdown[start:end].strip(), content["status"])
+    section = find_narrative_chapter(content, section_id)
+    section_markdown = mark_unreviewed_export("## " + section["heading"] + "\n\n" + section["body"], content["status"])
     output_root = get_configured_export_directory()
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     safe_title = re.sub(r"[\\/:*?\"<>|]", "_", section["heading"]).strip() or "lawflow-section"
@@ -3584,21 +3712,12 @@ def download_narrative_section(content_id: str, section_id: str):
         content = conn.execute("SELECT * FROM narrative_contents WHERE id = ?", (content_id,)).fetchone()
     if content is None:
         raise HTTPException(404, "知识转译成稿不存在。")
-    sources = parse_json(content["section_sources_json"], [])
-    section = next((item for item in sources if item.get("section_id") == section_id), None)
-    if section is None:
-        raise HTTPException(404, "章节不存在。")
-    markdown = collapse_duplicate_headings(content["markdown"])
-    heading = "## " + section["heading"]
-    start = markdown.find(heading)
-    next_start = re.search(r"\n##\s+", markdown[start + len(heading):]) if start >= 0 else None
-    end = start + len(heading) + (next_start.start() if next_start else len(markdown) - start - len(heading))
-    if start < 0:
-        raise HTTPException(409, "原稿中未找到该章节。")
+    section = find_narrative_chapter(content, section_id)
+    section_markdown = "## " + section["heading"] + "\n\n" + section["body"]
     temp_path = DATA_DIR / "temp" / (uuid.uuid4().hex + ".docx")
     project = project_or_404(content["project_id"])
     template = "podcast" if project.get("scenario") in {"daily_brief", "legal_podcast"} else "legal"
-    markdown_to_docx(mark_unreviewed_export(markdown[start:end].strip(), content["status"]), temp_path, template=template)
+    markdown_to_docx(mark_unreviewed_export(section_markdown, content["status"]), temp_path, template=template)
     safe_title = re.sub(r"[\\/:*?\"<>|]", "_", section["heading"]).strip() or "lawflow-section"
     return FileResponse(temp_path, media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document", filename=f"{safe_title}.docx")
 
@@ -3736,7 +3855,7 @@ def export_audio_script(audio_id: str):
     script_path = output_root / f"{safe_title}-音频脚本-{stamp}.md"
     script_path.write_text(output["script"], encoding="utf-8")
     result = {"script_path": str(script_path)}
-    if output["audio_path"] and Path(output["audio_path"]).is_file():
+    if output["status"] == "ready" and output["audio_path"] and Path(output["audio_path"]).is_file():
         audio_target = output_root / f"{safe_title}-{stamp}.mp3"
         shutil.copy2(output["audio_path"], audio_target)
         result["audio_path"] = str(audio_target)
@@ -3821,7 +3940,7 @@ def export_project_audiobook(project_id: str):
     """把已确认讲稿按章节合成单一 M4B 文件，供支持该格式的播放器导入。"""
     project = project_or_404(project_id)
     conn = db()
-    contents = conn.execute("SELECT * FROM narrative_contents WHERE project_id = ? AND status = 'confirmed' ORDER BY updated_at DESC", (project_id,)).fetchall()
+    contents = conn.execute("SELECT * FROM narrative_contents WHERE project_id = ? AND status = 'confirmed' ORDER BY updated_at DESC, rowid DESC", (project_id,)).fetchall()
     conn.close()
     if not contents:
         raise HTTPException(400, "请先确认讲稿，再导出有声书。")
@@ -3831,10 +3950,10 @@ def export_project_audiobook(project_id: str):
         raise HTTPException(400, "讲稿里没有可分章的二级标题（需要两节以上），无法生成有声书章节。")
     chapter_files: list[tuple[str, Path]] = []
     for heading in headings:
-        audio_title = f"{content['title']} · {heading}"
+        audio_title = heading if heading == content["title"] else f"{content['title']} · {heading}"
         conn = db()
         existing = conn.execute(
-            "SELECT * FROM audio_outputs WHERE project_id = ? AND narrative_content_id = ? AND title = ?",
+            "SELECT * FROM audio_outputs WHERE project_id = ? AND narrative_content_id = ? AND title = ? AND status != 'source_changed' ORDER BY created_at DESC, rowid DESC",
             (project_id, content["id"], audio_title),
         ).fetchone()
         conn.close()
@@ -3842,9 +3961,9 @@ def export_project_audiobook(project_id: str):
             narrative_content_id=content["id"], section_heading=heading,
         ))["id"]
         conn = db()
-        row = conn.execute("SELECT audio_path FROM audio_outputs WHERE id = ?", (audio_id,)).fetchone()
+        row = conn.execute("SELECT audio_path, status FROM audio_outputs WHERE id = ?", (audio_id,)).fetchone()
         conn.close()
-        audio_path = Path(row["audio_path"]) if row and row["audio_path"] else None
+        audio_path = Path(row["audio_path"]) if row and row["status"] == "ready" and row["audio_path"] else None
         if audio_path is None or not audio_path.is_file():
             synthesize_audio_output(audio_id, AudioSynthesisRequest())
             conn = db()
@@ -3981,6 +4100,9 @@ def synthesize_audio_output(audio_id: str, payload: AudioSynthesisRequest):
     if output is None:
         conn.close()
         raise HTTPException(status_code=404, detail="音频脚本不存在。")
+    if output["status"] == "source_changed":
+        conn.close()
+        raise HTTPException(409, "章节正文已修改，请先按最新正文更新口播脚本。")
     if not payload.preview and output["narrative_content_id"]:
         content = conn.execute("SELECT status FROM narrative_contents WHERE id = ?", (output["narrative_content_id"],)).fetchone()
         if content is None or content["status"] != "confirmed":
@@ -4001,8 +4123,8 @@ def finish_audio_output(output: sqlite3.Row, settings: dict):
     output_path, provider, duration_seconds = synthesize_audio(output["script"], output["title"], settings)
     timestamp = now_iso()
     conn = db()
-    latest = conn.execute("SELECT script FROM audio_outputs WHERE id=?", (audio_id,)).fetchone()
-    if latest is None or latest["script"] != output["script"]:
+    latest = conn.execute("SELECT script, status FROM audio_outputs WHERE id=?", (audio_id,)).fetchone()
+    if latest is None or latest["script"] != output["script"] or latest["status"] == "source_changed":
         conn.close()
         output_path.unlink(missing_ok=True)
         raise HTTPException(409, "合成期间脚本已修改，请按最新脚本重新生成。")
@@ -4021,6 +4143,8 @@ def stream_audio_output(audio_id: str):
     conn.close()
     if output is None or not output["audio_path"]:
         raise HTTPException(status_code=404, detail="尚未生成音频文件。")
+    if output["status"] == "source_changed":
+        raise HTTPException(409, "正文已更新，这份音频需要重新生成。")
     path = Path(output["audio_path"])
     if not path.is_file():
         raise HTTPException(status_code=404, detail="本地音频文件不存在。")
@@ -4270,7 +4394,7 @@ def export_project(project_id: str):
         evidence.append({"content_id": content["id"], "title": content["title"], "status": content["status"], "section_sources": parse_json(content["section_sources_json"], [])})
     for index, audio in enumerate(audios, start=1):
         (output_dir / f"口播脚本-{index:02d}.txt").write_text(audio["script"], encoding="utf-8")
-        if audio["audio_path"] and Path(audio["audio_path"]).is_file():
+        if audio["status"] == "ready" and audio["audio_path"] and Path(audio["audio_path"]).is_file():
             shutil.copy2(audio["audio_path"], output_dir / f"音频-{index:02d}.mp3")
     contents += narratives
     workbook = Workbook()
@@ -4423,7 +4547,14 @@ def build_mobile_book(conn: sqlite3.Connection, project_id: str) -> dict:
     if project is None:
         raise HTTPException(404, "项目不存在或已被删除。")
     contents = conn.execute("SELECT id, title, markdown, section_sources_json FROM narrative_contents WHERE project_id = ?", (project_id,)).fetchall()
-    audios = conn.execute("SELECT * FROM audio_outputs WHERE project_id = ? AND status = 'ready' ORDER BY created_at", (project_id,)).fetchall()
+    audio_rows = conn.execute("SELECT * FROM audio_outputs WHERE project_id = ? AND status = 'ready' ORDER BY created_at DESC, rowid DESC", (project_id,)).fetchall()
+    # 同章只发送最新音频；更新过的章仍排在其正文对应的位置。
+    audios, seen = [], set()
+    for audio in audio_rows:
+        key = (audio["narrative_content_id"], audio["title"])
+        if key not in seen:
+            seen.add(key)
+            audios.append(audio)
 
     content_map = {row["id"]: row for row in contents}
     md_map: dict[str, str] = {}
@@ -4449,6 +4580,8 @@ def build_mobile_book(conn: sqlite3.Connection, project_id: str) -> dict:
     def chapter_payload(audio) -> dict:
         content = content_map.get(audio["narrative_content_id"]) if audio["narrative_content_id"] else None
         suffix = mobile_chapter_suffix(content["title"], audio["title"]) if content else ""
+        if content and not suffix and heading_map[content["id"]] == [content["title"]]:
+            suffix = content["title"]
         section_id = section_id_for(content["id"], suffix) if content and suffix else ""
         if content and suffix:
             chapter_text = extract_section_text(md_map[content["id"]], suffix)
@@ -4469,6 +4602,8 @@ def build_mobile_book(conn: sqlite3.Connection, project_id: str) -> dict:
 
     whole_book = [chapter_payload(a) for a in audios if not a["narrative_content_id"]]
     chapters = [chapter_payload(a) for a in audios if a["narrative_content_id"]]
+    content_order = {row["id"]: index for index, row in enumerate(contents)}
+    chapters.sort(key=lambda c: (content_order.get(c["content_id"], 0), int(c["section_id"].split("-")[-1]) if c["section_id"] else 0))
     learned = sum(1 for c in chapters if c["learned"])
     return {
         "title": project["name"],
