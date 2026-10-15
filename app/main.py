@@ -80,7 +80,9 @@ def register_bundled_ffmpeg(search_roots: list[Path] | None = None) -> list[Path
     for root in roots:
         if not root.is_dir():
             continue
-        candidate_dirs = [root, *sorted(root.glob("*/bin")), *sorted(root.glob("*/*/bin"))]
+        # 兼容两种布局：开发态 tools/ffmpeg/<version>_build/bin/，
+        # 打包态 spec 直接映射为 tools/ffmpeg/bin/（bin 是直接子目录）。
+        candidate_dirs = [root, root / "bin", *sorted(root.glob("*/bin")), *sorted(root.glob("*/*/bin"))]
         for candidate in candidate_dirs:
             if not candidate.is_dir() or not (candidate / exe_name).exists():
                 continue
