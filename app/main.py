@@ -77,6 +77,14 @@ def register_bundled_ffmpeg(search_roots: list[Path] | None = None) -> list[Path
     found: list[Path] = []
     path_value = os.environ.get("PATH", "")
     path_entries = path_value.split(os.pathsep) if path_value else []
+    # 本机踩坑：用户级 PATHEXT 被改成只剩 ".CPL"，覆盖了系统默认值，
+    # shutil.which('ffmpeg') 只会尝试 ffmpeg.CPL，永远找不到 ffmpeg.exe。
+    # 防御性补上 .EXE，保证 end-user 机器上同类环境异常也能工作。
+    if sys.platform == "win32":
+        pathext = [item for item in os.environ.get("PATHEXT", "").split(os.pathsep) if item.strip()]
+        if ".EXE" not in [item.upper() for item in pathext]:
+            pathext.append(".EXE")
+            os.environ["PATHEXT"] = os.pathsep.join(pathext)
     for root in roots:
         if not root.is_dir():
             continue

@@ -1152,6 +1152,8 @@ class ImprovementsTest(unittest.TestCase):
                 self.assertTrue(shutil.which('ffmpeg'))
                 # Windows 下 which 返回的实际大小写可能是 .EXE，按路径比较不区分大小写
                 self.assertEqual(Path(shutil.which('ffmpeg')).resolve(), (exe_dir / exe_name).resolve())
+                # 本机 PATHEXT 被改成只剩 .CPL 时也必须兜底补上 .EXE，否则 which 永远找不到 ffmpeg.exe
+                self.assertIn('.EXE', [item.upper() for item in os.environ.get('PATHEXT', '').split(os.pathsep)])
             finally:
                 os.environ['PATH'] = original
 
