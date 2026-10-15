@@ -787,6 +787,12 @@ body.empty-shelf .quick-upload { display: none; }
 .quick-link-preview fieldset { display: grid; gap: 8px; }
 .quick-link-preview fieldset label { display: block; padding: 10px 12px; border: 1px solid #ded5c0; border-radius: 5px; background: #fffdf8; font-size: 13px; line-height: 1.6; cursor: pointer; }
 .quick-link-preview fieldset label:has(input:checked) { border-color: var(--moss); background: #f0f3e9; color: #354430; }
+.quick-link-preview fieldset label small { display: block; color: #8d8264; font-size: 11px; }
+.quick-depth { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; padding: 12px; border: 1px dashed #cfc6ae; border-radius: 6px; background: #faf7ef; }
+.quick-depth-title { grid-column: 1 / -1; color: #5f5543; font-size: 12px; letter-spacing: .06em; }
+.quick-depth label { display: block; padding: 8px 10px; border: 1px solid #ded5c0; border-radius: 5px; background: #fffdf8; font-size: 12.5px; line-height: 1.5; cursor: pointer; }
+.quick-depth label:has(input:checked) { border-color: var(--moss); background: #f0f3e9; color: #354430; }
+@media (max-width: 720px) { .quick-depth { grid-template-columns: 1fr; } }
 .listening-choice { border-color: #cbd5ba; background: linear-gradient(110deg, #f1f5eb, #faf8ef); }
 .listening-choice h3 { margin-bottom: 6px; }
 .listening-choice p { color: var(--ink-soft); }
@@ -810,3 +816,12 @@ audio[data-no-audio="1"] { display: none; }
 .mobile-share-qr { width: 180px; height: 180px; padding: 10px; border: 1px solid #e2ddd2; border-radius: 12px; background: #fff; }
 .mobile-share-url { margin: 0; font: 13px/1.5 "DM Mono", monospace; word-break: break-all; }
 .mobile-share-warn { color: #a05a1f; }
+
+/* 章节划分意见反馈：与全局表单风格一致（实线细边框 + 暖色底 + 统一输入框） */
+.split-feedback { margin-top: 18px; padding: 13px 16px 14px; border: 1px solid #e1dbcf; border-radius: 8px; background: #faf8f2; }
+.split-feedback summary { cursor: pointer; color: var(--ink-soft); font-size: 13px; font-weight: 600; }
+.split-feedback[open] summary { margin-bottom: 10px; }
+.split-feedback .form-note { margin-bottom: 10px; }
+.split-feedback textarea { width: 100%; min-height: 64px; padding: 8px 10px; border: 1px solid #ddd8cd; border-radius: 7px; background: #fffefa; color: var(--ink); font: 13px/1.5 "Noto Sans SC", sans-serif; resize: vertical; }
+.split-feedback textarea:focus { outline: none; border-color: var(--accent); }
+.split-feedback .plan-actions { margin-top: 14px; padding-top: 0; border-top: 0; }

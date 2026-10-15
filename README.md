@@ -7,10 +7,11 @@
 ## 功能特性
 
 - **多种导入方式**：粘贴公众号或公开网页链接（抓取后可展开核对全文）、上传 PDF / DOCX / TXT / Markdown，或直接粘贴正文。
-- **三种收听形态**：
+- **两种收听形态**：
   - **原文朗读** — 不经 AI 改写，直接生成语音；
-  - **先听要点** — 把长文章压缩为约 5 分钟的速听稿，超长时自动兜底压缩；
-  - **分章节学习** — 按目录或内容逻辑划分章节，逐章成稿、逐章收听，支持记录每章的学习进度。
+  - **播客风改写（默认）** — AI 按目录或内容逻辑划分章节，逐章写成播客风讲稿再合成音频。改写深度三档可选：忠实转译（不丢信息）/ 提炼（压缩速听）/ 扩充（补背景讲得更透）。
+- **章节页即落地页**：书架点进项目直接落在章节视图——每章的讲稿、音频、学习进度放在一起；确认章节后大纲与讲稿自动生成（对外发布类场景保留人工核验闸门）。
+- **按意见让 AI 重做**：章节划分不满意，写意见让 AI 重新分章；单章讲稿不满意，写意见生成候选稿，对照后决定采用或保留。
 - **章节正文与音频一起查看**：目录展示每章的正文和音频状态，选中后可以阅读、播放、调倍速、保存音频或单独编辑本章。
 - **按意见修改讲稿**：针对一章填写修改意见，先对照原稿与候选稿，再选择采用或保留原稿。保存修改后，改动章节及整篇音频标为待更新；其他章节继续可听。章节划分不合适时，可按合并、拆分或排序意见生成新大纲，确认后再生成新版本，旧稿保留。
 - **音频输出**：试听片段、浏览器校对朗读、整篇 MP3、带章节标记的 M4B 有声书；支持音色增强与语速调整。
@@ -24,14 +25,14 @@
 ```
 导入材料 ──► 选择收听方式 ──► 大纲 / 脚本 ──► 人工审阅确认 ──► TTS 合成 ──► 试听 / 导出
    │              │                │                                    │
- 网页/文件      原文朗读          AI 生成，标注来源回链            MP3 / M4B / DOCX
- 粘贴正文      先听要点          用户可逐节修改、重做             带章节标记
-              分章节学习
+ 网页/文件      原文朗读          AI 播客风改写，标注来源回链        MP3 / M4B / DOCX
+ 粘贴正文      播客风改写        自动成稿，可逐章修改、重做         带章节标记
+                （深度三档）
 ```
 
 ## AI 协作方式
 
-原文朗读不依赖文本模型。选择"先听要点"或"分章节学习"时，声息提供三种协作方式：
+原文朗读不依赖文本模型。选择播客风改写时，声息提供三种协作方式：
 
 | 方式 | 怎么使用 | 材料去向 |
 | --- | --- | --- |
@@ -45,9 +46,11 @@
 
 ### 方式一：下载安装包
 
-前往 [Releases](https://github.com/hey-elaine/lawflow/releases) 下载安装包（Apple Silicon）。注意：已发布版本可能落后于 `main` 分支；当前包采用临时签名、尚未完成公证，安装要求见[版本说明](https://github.com/hey-elaine/lawflow/releases/tag/v0.1.0-beta.1)。
+前往 [Releases](https://github.com/hey-elaine/lawflow/releases) 下载安装包（Apple Silicon / Windows）。注意：已发布版本可能落后于 `main` 分支；macOS 包采用临时签名、尚未完成公证，安装要求见[版本说明](https://github.com/hey-elaine/lawflow/releases/tag/v0.1.0-beta.1)。
 
 ### 方式二：从源码运行
+
+macOS / Linux：
 
 ```bash
 git clone https://github.com/hey-elaine/lawflow.git
@@ -58,13 +61,25 @@ python3 -m pip install -r requirements.txt
 python3 -m uvicorn app.main:app --host 127.0.0.1 --port 8080
 ```
 
+Windows（PowerShell）：
+
+```powershell
+git clone https://github.com/hey-elaine/lawflow.git
+cd lawflow
+python -m venv .venv
+.venv\Scripts\activate
+python -m pip install -r requirements.txt
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8080
+```
+
 在浏览器打开 <http://127.0.0.1:8080>。首页提供完整示例项目，可以先试听再决定是否导入自己的材料。
 
 补充说明：
 
-- **FFmpeg**（含 `ffprobe`）：完整 MP3 合成与 M4B 导出需要；仅导入、整理和审阅文字不需要。
+- **FFmpeg**（含 `ffprobe`）：完整 MP3 合成与 M4B 导出需要；仅导入、整理和审阅文字不需要。Windows 可用 `winget install Gyan.FFmpeg`。
 - **文本模型**：在应用"本地设置"中连接；使用本机 Agent 协作或原文朗读时不必配置。
-- **桌面打包**：见[桌面版发布说明](docs/desktop-release.md)。
+- **语音合成**：macOS / Windows 均有免费离线的本机语音可选，无需任何密钥；云端 TTS 为可选项。
+- **桌面打包**：macOS 见[桌面版发布说明](docs/desktop-release.md)，Windows 见 [Windows 运行与打包说明](docs/windows-release.md)。
 
 ## 技术栈
 
@@ -78,7 +93,7 @@ python3 -m uvicorn app.main:app --host 127.0.0.1 --port 8080
 
 ## 数据与隐私
 
-- **本地存储**：文章、项目、进度和生成结果默认保存在本机。桌面版路径为 `~/Library/Application Support/LawFlow/data/`；从源码运行使用仓库下的 `data/`。导出目录可在应用中设置。
+- **本地存储**：文章、项目、进度和生成结果默认保存在本机。桌面版路径：macOS 为 `~/Library/Application Support/LawFlow/data/`，Windows 为 `%LOCALAPPDATA%\LawFlow\data`；从源码运行使用仓库下的 `data/`。导出目录可在应用中设置。
 - **网络边界**：桌面应用监听局域网，但局域网设备只能访问扫码领取的收听页（`/m/` 一次性链接），无法访问声息的其他功能。声息目前没有公共业务后端。
 - **第三方服务**：使用外部文本模型或语音服务时，相关内容会发往用户选择的服务。调用前请确认材料有权发送。
 - **网页检索**：公开网页检索仅用于发现候选来源，用户确认导入后才会用于后续整理。

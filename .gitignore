@@ -11,7 +11,16 @@ data/logs/
 .DS_Store
 build/
 dist/
+tools/
+.workbuddy/
 *.spec
 # Local secrets and one-off manual audio test artifact.
 .env
 本地语音测试。
+# Local walkthrough / debug artifacts (contain machine-specific paths and test state).
+walkthrough_state.json
+generated_*.md
+scripts/walkthrough_*.py
+scripts/debug_*.py
+data/shots/
+mobile_token.txt

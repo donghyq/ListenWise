@@ -186,6 +186,10 @@ function bindQuickImport() {
   const input = $('#quick-link-input');
   const status = $('#quick-link-status');
   input.addEventListener('input', resetQuickLinkPreview);
+  // 原文朗读不需要改写深度；只在播客风改写时显示深度选项。
+  $$('input[name="quick_scenario"]', form).forEach(radio => radio.addEventListener('change', () => {
+    $('#quick-depth').hidden = form.elements.quick_scenario.value === 'direct_audio';
+  }));
   form.addEventListener('submit', async event => {
     event.preventDefault();
     const url = input.value.trim();
@@ -214,10 +218,11 @@ function bindQuickImport() {
     const button = event.currentTarget;
     const choice = form.elements.quick_scenario.value;
     const scenario = choice === 'direct_audio' ? 'daily_brief' : choice;
+    const transformMode = form.elements.quick_transform?.value || (scenario === 'daily_brief' ? 'adapt' : 'condense');
     try {
       setBusy(button, true, '正在加入书架…');
       status.textContent = '正在保存文章并解析结构…';
-      const result = await request('/api/projects/from-link', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: quickLinkPreview.url, scenario }) });
+      const result = await request('/api/projects/from-link', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: quickLinkPreview.url, scenario, transform_mode: transformMode }) });
       input.value = '';
       resetQuickLinkPreview();
       await loadProjects();
@@ -226,7 +231,7 @@ function bindQuickImport() {
         showMessage('文章已导入，正在按原文生成音频…');
         await directDocumentAudio(result.source.id, button);
       } else {
-        showMessage('文章已导入。请核对原文，再确认大纲。');
+        showMessage('文章已导入。请核对原文，确认章节后自动分章改写。');
       }
     } catch (error) { status.textContent = readableError(error) + ' 请重试，或改用文件和粘贴正文。'; }
     finally { setBusy(button, false); }
@@ -249,11 +254,13 @@ async function loadDemoProject(event) {
 }
 
 function defaultTabForProject(data) {
-  // 打开项目时落在第一个未完成的环节，与 renderWorkflowHint 的“下一步”逻辑保持一致；
-  // 避免沿用上一个项目停留的页签（例如点进刚建的项目却直接落在“音频与导出”）。
+  // 章节页是书架点进来的默认落点：已有成稿（或原文朗读）直达章节与音频；
+  // 还没有结构时才落在工作流（素材 / 大纲），把用户一步步带到章节页。
   const state = projectStepState(data);
+  const narratives = data.narrative_contents || [];
   if (!state.hasDocument) return 'materials';
   if (state.hasDirectAudio && !state.hasStructure) return 'audio';
+  if (narratives.length) return 'audio';
   if (!state.hasStructure) return 'structure';
   if (state.needsExternalVerification && !state.verificationReady) return 'tasks';
   if (!state.confirmed) return 'narrative';
@@ -345,17 +352,16 @@ function renderProjectDetail() {
   document.body.classList.add('in-project');
   const scenario = SCENARIOS[data.project.scenario] || SCENARIOS.topic_learning;
   const verificationStep = data.project.verification_mode === 'source_only' ? 0 : 3;
-  const narrativeStep = verificationStep ? 4 : 3;
-  const audioStep = narrativeStep + 1;
   const state = projectStepState(data);
   const directListening = state.hasDirectAudio && !state.hasStructure;
+  // 章节页放在第一位：书架点进来首先看到章节与音频；
+  // 素材、大纲等整理步骤收在后面，作为“整理工作台”。
   const tabs = directListening
-    ? [['materials', '1 素材', state.materials], ['audio', '2 收听与导出', state.audio], ['structure', '整理成速听（可选）', '']]
-    : [['materials', '1 素材', state.materials], ['structure', '2 大纲', state.structure]];
+    ? [['audio', '章节 · 收听', state.audio], ['materials', '素材', state.materials], ['structure', '播客风改写（可选）', '']]
+    : [['audio', '章节 · 收听', state.audio], ['materials', '素材', state.materials], ['structure', '大纲', state.structure]];
   if (!directListening) {
     if (verificationStep) tabs.push(['tasks', verificationStep + ' ' + (data.project.verification_mode === 'external_verify' ? '核验与来源' : '表述核对'), state.verification]);
-    tabs.push(['narrative', narrativeStep + ' 章节与讲稿', state.narrative]);
-    if (data.project.audio_enabled) tabs.push(['audio', audioStep + ' 音频与导出', state.audio]);
+    tabs.push(['narrative', '讲稿工作台', state.narrative]);
   }
   if (!tabs.some(item => item[0] === appState.activeTab)) appState.activeTab = 'materials';
   const tabHtml = tabs.map(([key, label, status]) =>
@@ -415,10 +421,10 @@ function renderMaterialsPanel() {
   const selected = currentDocument();
   const docRows = docs.length ? docs.map(doc => `
     <div class="doc-row"><div><b>${escapeHtml(doc.original_name)}</b><small>${doc.paragraph_count} 个段落 · ${doc.block_count} 个素材块${doc.source_url ? ' · 已记录来源' : ''}</small></div>
-      <div class="doc-row-actions"><button class="button button-outline button-small" data-view-doc-text="${doc.id}">核对原文</button><button class="button button-outline button-small" data-view-document="${doc.id}">查看结构</button><button class="button button-danger button-small" data-delete-document="${doc.id}">删除</button></div></div>`).join('') : '<p class="form-note">尚未导入素材。上传文件或粘贴正文后，即可选择收听方式。</p>';
-  const nextChoice = selected ? `<section class="panel-card listening-choice" id="listening-choice"><p class="eyebrow">素材已就绪</p><h3>「${escapeHtml(selected.original_name)}」想怎么听？</h3><p>请先核对解析原文。已有好文章可保持原文；需要更短的版本再整理。</p><div class="listening-choice-actions">${project.audio_enabled ? `<button class="button button-primary" data-direct-audio="${selected.id}">原文朗读 · 不改写</button>` : ''}<button class="button button-outline" id="start-structure">整理成速听 / 分章学习</button></div></section>` : '';
+      <div class="doc-row-actions"><button class="button button-outline button-small" data-view-doc-text="${doc.id}">核对原文</button><button class="button button-outline button-small" data-view-document="${doc.id}">查看结构</button><button class="button button-outline button-small" data-ai-parse="${doc.id}">AI 解析</button><button class="button button-danger button-small" data-delete-document="${doc.id}">删除</button></div></div>`).join('') : '<p class="form-note">尚未导入素材。上传文件或粘贴正文后，即可选择收听方式。</p>';
+  const nextChoice = selected ? `<section class="panel-card listening-choice" id="listening-choice"><p class="eyebrow">素材已就绪</p><h3>「${escapeHtml(selected.original_name)}」想怎么听？</h3><p>请先核对解析原文。想让路上更好听，就用播客风改写；好文章也可以保持原文直接朗读。</p><div class="listening-choice-actions"><button class="button button-primary" id="start-structure">播客风改写 · 分章成稿</button>${project.audio_enabled ? `<button class="button button-outline" data-direct-audio="${selected.id}">原文朗读 · 不改写</button>` : ''}</div></section>` : '';
   const searchPanel = project.scenario === 'topic_learning' ? `<section class="panel-card web-search-panel"><details><summary>还需要查找其他公开材料？</summary><p>仅用于发现公开网页。结果须逐条确认后才能导入；已有链接时请直接在首页粘贴。</p><div class="web-search-form"><input id="web-search-query" value="${escapeHtml(project.client_name || project.name)}" placeholder="输入简短关键词"/><button class="button button-outline button-small" id="search-web-sources">检索公开材料</button></div><div id="web-search-results" class="web-search-results"></div></details></section>` : '';
-  panel.innerHTML = `<section class="panel-card"><h3>输入素材</h3><p>上传文件或粘贴正文。导入后先核对原文，再选择朗读或整理。</p><div class="source-input-grid"><label class="upload-zone paper-drop" id="paper-drop"><input type="file" id="document-upload" accept=".docx,.txt,.md,.pdf" /><div class="paper-drop-inner"><b>放下一篇你想带走的文字</b><span>DOCX · PDF · TXT · Markdown</span><small>点选文件，或直接拖进来</small></div></label><div class="paste-source"><b>粘贴文章或公开材料</b><input id="text-source-title" placeholder="素材标题"/><input id="text-source-url" placeholder="来源链接（可选）"/><textarea id="text-source-content" placeholder="粘贴公众号正文、新闻报道或实务笔记…"></textarea><button class="button button-outline button-small" id="create-text-source">保存为素材</button></div></div><div class="doc-list">${docRows}</div></section>${nextChoice}${searchPanel}<section class="panel-card" id="material-map-panel"><h3>材料结构</h3><p>这里可以查看原文结构和辅助核对信息。</p></section>`;
+  panel.innerHTML = `<section class="panel-card"><h3>输入素材</h3><p>上传文件或粘贴正文。导入后先核对原文，再选择朗读或整理。</p><div class="source-input-grid"><label class="upload-zone paper-drop" id="paper-drop"><input type="file" id="document-upload" accept=".docx,.txt,.md,.pdf" /><div class="paper-drop-inner"><b>放下一篇你想带走的文字</b><span>DOCX · PDF · TXT · Markdown</span><small>点选文件，或直接拖进来</small></div></label><div class="paste-source"><b>粘贴文章或公开材料</b><input id="text-source-title" placeholder="素材标题"/><input id="text-source-url" placeholder="来源链接（可选）"/><textarea id="text-source-content" placeholder="粘贴公众号正文、新闻报道或实务笔记…"></textarea><button class="button button-outline button-small" id="create-text-source">保存为素材</button></div></div><div class="doc-list">${docRows}</div>${selected ? `<details class="split-feedback" id="ai-parse-feedback"><summary>结构解析不对？让 AI 重新解析</summary><p class="form-note">适合样式混乱的 Word / WPS 文档或无标记的纯文本。例如写：把「综合合规」这类栏目名当一级标题；【国家】开头的条目是二级标题。</p><textarea id="ai-parse-feedback-text" rows="3" placeholder="写下你对结构的意见（可选），AI 会按意见重新解析「${escapeHtml(selected.original_name)}」…"></textarea><div class="plan-actions"><button class="button button-outline button-small" id="ai-reparse-with-feedback">按意见用 AI 重新解析</button></div></details>` : ''}</section>${nextChoice}${searchPanel}<section class="panel-card" id="material-map-panel"><h3>材料结构</h3><p>这里可以查看原文结构和辅助核对信息。</p></section>`;
   $('#document-upload').addEventListener('change', event => uploadDocument(event.target.files[0]));
   const paperDrop = $('#paper-drop');
   if (paperDrop) {
@@ -430,6 +436,12 @@ function renderMaterialsPanel() {
   $('#search-web-sources')?.addEventListener('click', searchWebSources);
   $$('[data-view-document]', panel).forEach(button => button.addEventListener('click', () => viewDocumentMap(button.dataset.viewDocument, true)));
   $$('[data-view-doc-text]', panel).forEach(button => button.addEventListener('click', () => viewDocumentText(button.dataset.viewDocText)));
+  $$('[data-ai-parse]', panel).forEach(button => button.addEventListener('click', () => aiParseDocument(button.dataset.aiParse, button, '')));
+  $('#ai-reparse-with-feedback')?.addEventListener('click', () => {
+    const doc = currentDocument();
+    if (!doc) { showMessage('请先导入素材。', true); return; }
+    aiParseDocument(doc.id, $('#ai-reparse-with-feedback'), $('#ai-parse-feedback-text')?.value.trim() || '');
+  });
   $$('[data-direct-audio]', panel).forEach(button => button.addEventListener('click', () => directDocumentAudio(button.dataset.directAudio, button)));
   $$('[data-delete-document]', panel).forEach(button => button.addEventListener('click', () => deleteDocument(button.dataset.deleteDocument, button)));
   $('#start-structure')?.addEventListener('click', () => { appState.activeTab = 'structure'; renderProjectDetail(); });
@@ -447,6 +459,20 @@ async function createTextSource() {
   const content = $('#text-source-content').value.trim();
   if (!title || content.length < 20) { showMessage('请填写素材标题，并粘贴至少 20 个字符的正文。', true); return; }
   try { setBusy(button, true, '保存中…'); const result = await request('/api/projects/' + appState.selectedProject.project.id + '/text-sources', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title, content, source_url: $('#text-source-url').value.trim() }) }); appState.selectedProject = await request('/api/projects/' + appState.selectedProject.project.id); appState.selectedDocument = { ...result, blocks: null }; await loadProjects(); renderProjectDetail(); await viewDocumentMap(result.id); showMessage('文字素材已保存并完成结构解析。'); } catch (error) { showMessage(error.message, true); } finally { setBusy(button, false); }
+}
+
+async function aiParseDocument(documentId, button, feedback = '') {
+  try {
+    setBusy(button, true, 'AI 解析中…');
+    showMessage('正在用 AI 重新解析文档结构，通常需要十几秒…');
+    const result = await request('/api/documents/' + documentId + '/ai-parse', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ feedback }) });
+    appState.selectedDocument = null; // 解析后块结构已变，强制下次重新拉取
+    appState.selectedProject = await request('/api/projects/' + appState.selectedProject.project.id);
+    await loadProjects();
+    renderProjectDetail();
+    await viewDocumentMap(documentId);
+    showMessage(result.message);
+  } catch (error) { showMessage(readableError(error), true); } finally { setBusy(button, false); }
 }
 
 async function searchWebSources() {
@@ -636,15 +662,16 @@ async function createLearningPlan(options = {}) {
     const useAiSplit = auto && headingCount >= 2;
     const selectedHeadingIds = auto ? [] : $$('input[name="plan-heading"]:checked').map(input => input.value);
     if (!auto && !selectedHeadingIds.length) throw new Error('请先勾选要学习的目录章节。');
+    if (options.feedback && !useAiSplit) throw new Error('这篇材料没有多级目录，AI 分章用不上；请手动挑选章节，或直接整篇确认。');
     const project = appState.selectedProject.project;
     const scenario = SCENARIOS[project.scenario] || SCENARIOS.topic_learning;
-    const body = { source_document_id: doc.id, selected_heading_ids: selectedHeadingIds, audience: $('#narrative-audience').value.trim() || scenario.audience, output_type: project.scenario === 'speaking_note' ? 'client_brief' : 'lexcast', style_name: '深入浅出、适合朗读', include_audio: !!project.audio_enabled, auto_split: auto, split_mode: useAiSplit ? 'ai' : 'rules' };
+    const body = { source_document_id: doc.id, selected_heading_ids: selectedHeadingIds, audience: $('#narrative-audience').value.trim() || scenario.audience, output_type: project.scenario === 'speaking_note' ? 'client_brief' : 'lexcast', style_name: '深入浅出、适合朗读', include_audio: !!project.audio_enabled, auto_split: auto, split_mode: useAiSplit ? 'ai' : 'rules', feedback: options.feedback || '' };
     setBusy(button, true, useAiSplit ? '正在分析章节…' : '建立中…');
     const plan = await request('/api/projects/' + project.id + '/plans', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     appState.selectedProject = await request('/api/projects/' + project.id);
     appState.activePlan = appState.selectedProject.plans.find(item => item.id === plan.id) || plan;
     renderProjectDetail();
-    showMessage(!auto ? '已按所选目录建立结构。请检查后确认。' : plan.split_mode === 'ai' ? '已按内容逻辑划分章节。请检查后确认。' : headingCount < 2 ? '已按整篇文章建立结构。请检查后确认。' : '智能分章未生成可用结果，已按目录划分章节。请检查后确认。');
+    showMessage(!auto ? '已按所选目录建立结构。请检查后确认。' : options.feedback ? '已按你的意见重新划分章节。请检查后确认。' : plan.split_mode === 'ai' ? '已按内容逻辑划分章节。请检查后确认。' : headingCount < 2 ? '已按整篇文章建立结构。请检查后确认。' : '智能分章未生成可用结果，已按目录划分章节。请检查后确认。');
   } catch (error) { showMessage(error.message, true); } finally { setBusy(button, false); }
 }
 
@@ -889,11 +916,11 @@ function renderStructurePanel() {
   const supplementDocs = docs.filter(doc => doc.source_url);
   const supplementOptions = supplementDocs.map(doc => '<label class="check-label"><input type="checkbox" name="narrative-supplement" value="' + doc.id + '" ' + (doc.id === defaultDocId ? 'disabled' : '') + '/><span>' + escapeHtml(doc.original_name) + ' <small>· 已登记公开链接</small></span></label>').join('');
   const currentPlan = appState.activePlan;
-  const planPanel = '<section class="panel-card"><p class="eyebrow">第一步 · 划分学习章节</p><h3>把材料分成适合碎片学习的章节</h3><p>每一章会单独成稿、可单独收听，适合通勤、间隙时间逐章推进。通常按材料目录自动划分即可；目录复杂或只想学部分章节时再手动挑选。</p><div class="plan-settings"><div class="field"><label>源材料<select id="plan-document">' + docs.map(doc => '<option value="' + doc.id + '" ' + (doc.id === (currentPlan?.document_id || defaultDocId) ? 'selected' : '') + '>' + escapeHtml(doc.original_name) + '</option>').join('') + '</select></label></div></div><div class="plan-actions"><button class="button button-primary" id="auto-split-plan">自动划分章节</button><button class="button button-outline" id="toggle-heading-picker">手动挑选目录章节</button></div><div id="plan-heading-selector" class="plan-heading-selector" hidden></div>' + (currentPlan ? '<div class="plan-selected-chapters"><h4>' + (currentPlan.status === 'confirmed' ? '已确认的章节' : '待确认的章节') + '</h4><p class="form-note">可修改标题、取消不需要的章节；改动后请重新确认，并在下方重新建立写作大纲。</p><div id="chapter-list" class="chapter-list">' + renderChapters(currentPlan.chapters) + '</div>' + (function(){ const total = currentPlan.chapters.length; const enabled = currentPlan.chapters.filter(c => c.enabled).length; return '<div class="plan-confirm-bar"><div class="plan-confirm-summary"><strong>已选 ' + enabled + ' / ' + total + ' 章</strong><span>' + (enabled === total ? '保持默认即可直接确认' : '已取消的章节不会生成内容') + '</span></div><button class="button button-primary" id="confirm-plan">' + (currentPlan.status === 'confirmed' ? '保存结构调整' : '确认章节结构') + '</button></div>'; })() + '</div>' : '') + '</section>';
+  const planPanel = '<section class="panel-card"><p class="eyebrow">第一步 · 划分学习章节</p><h3>把材料分成适合碎片学习的章节</h3><p>每一章会单独成稿、可单独收听，适合通勤、间隙时间逐章推进。通常按材料目录自动划分即可；目录复杂或只想学部分章节时再手动挑选。</p><div class="plan-settings"><div class="field"><label>源材料<select id="plan-document">' + docs.map(doc => '<option value="' + doc.id + '" ' + (doc.id === (currentPlan?.document_id || defaultDocId) ? 'selected' : '') + '>' + escapeHtml(doc.original_name) + '</option>').join('') + '</select></label></div></div><div class="plan-actions"><button class="button button-primary" id="auto-split-plan">自动划分章节</button><button class="button button-outline" id="toggle-heading-picker">手动挑选目录章节</button></div><div id="plan-heading-selector" class="plan-heading-selector" hidden></div><details class="split-feedback" id="split-feedback"><summary>对分出来的章节不满意？写意见让 AI 重新划分</summary><p class="form-note">例如：分得太细了，把前两章合并；第三章和第五章其实是同一个主题；想按“背景→规则→实务”重新组织。</p><textarea id="split-feedback-text" rows="3" placeholder="写下你对章节划分的意见…"></textarea><div class="plan-actions"><button class="button button-outline button-small" id="resplit-with-feedback">按意见重新划分</button></div></details>' + (currentPlan ? '<div class="plan-selected-chapters"><h4>' + (currentPlan.status === 'confirmed' ? '已确认的章节' : '待确认的章节') + '</h4><p class="form-note">可修改标题、取消不需要的章节；改动后请重新确认，并在下方重新建立写作大纲。</p><div id="chapter-list" class="chapter-list">' + renderChapters(currentPlan.chapters) + '</div>' + (function(){ const total = currentPlan.chapters.length; const enabled = currentPlan.chapters.filter(c => c.enabled).length; return '<div class="plan-confirm-bar"><div class="plan-confirm-summary"><strong>已选 ' + enabled + ' / ' + total + ' 章</strong><span>' + (enabled === total ? '保持默认即可直接确认' : '已取消的章节不会生成内容') + '</span></div><button class="button button-primary" id="confirm-plan">' + (currentPlan.status === 'confirmed' ? '保存结构调整' : '确认章节结构') + '</button></div>'; })() + '</div>' : '') + '</section>';
 
   const feedbackOutline = outlines.find(item => item.id === appState.structureFeedbackOutline) || outlines[0];
-  panel.innerHTML = renderOutlineFeedback(feedbackOutline) + planPanel + '<section class="panel-card"><p class="eyebrow">第二步 · 生成写作大纲</p><h3>章节确认后自动生成大纲</h3>' +
-    '<p class="form-note">' + (currentPlan?.status === 'confirmed' ? '已根据你确认的章节自动生成写作大纲，下方可直接检查。' : '确认上方章节后会自动生成写作大纲，通常无需手动操作。') + '</p>' +
+  panel.innerHTML = renderOutlineFeedback(feedbackOutline) + planPanel + '<section class="panel-card"><p class="eyebrow">第二步 · 自动生成播客风讲稿</p><h3>章节确认后自动成稿</h3>' +
+    '<p class="form-note">' + (currentPlan?.status === 'confirmed' ? '已根据你确认的章节自动生成播客风讲稿，逐章可听、可改。' : '确认上方章节后，会自动生成大纲并逐章写出播客风讲稿；完成后直接跳到章节页收听。') + '</p>' +
     '<details class="outline-advanced" id="outline-advanced"><summary>生成前调整参数（可选）</summary>' +
     '<div class="narrative-form"><div class="field"><label>讲稿标题</label><input id="narrative-title" value="' + escapeHtml(defaultDocument.original_name.replace(/\.[^.]+$/, '')) + '" />' + (defaultChapter ? '<small class="field-hint">默认为素材标题；整份讲稿不要沿用某一章的标题。</small>' : '') + '</div>' +
     '<div class="field"><label>目标听众</label><input id="narrative-audience" value="' + escapeHtml(scenario.audience) + '" /></div>' +
@@ -909,6 +936,11 @@ function renderStructurePanel() {
   $('#create-narrative-outline').addEventListener('click', createNarrativeOutline);
   bindOutlineFeedback(feedbackOutline);
   $('#auto-split-plan').addEventListener('click', () => createLearningPlan({ auto: true }));
+  $('#resplit-with-feedback')?.addEventListener('click', () => {
+    const feedback = $('#split-feedback-text')?.value.trim();
+    if (!feedback) { showMessage('请先写下你对章节划分的意见。', true); return; }
+    createLearningPlan({ auto: true, feedback });
+  });
   $('#toggle-heading-picker').addEventListener('click', () => {
     const selector = $('#plan-heading-selector');
     selector.hidden = !selector.hidden;
@@ -1171,7 +1203,24 @@ async function maybeAutoCreateOutline() {
   if (autoOutlineInFlight || autoOutlineDoneForPlan === plan.id) return;
   autoOutlineDoneForPlan = plan.id;
   autoOutlineInFlight = true;
-  try { await createNarrativeOutline({ auto: true }); } finally { autoOutlineInFlight = false; }
+  try {
+    const record = await createNarrativeOutline({ auto: true });
+    if (!record) return;
+    const project = appState.selectedProject.project;
+    // 对外发布类场景保留人工确认闸门；个人学习场景直接自动成稿，确认章节后一路到章节页。
+    if (project.verification_mode === 'external_verify') return;
+    await request('/api/narrative-outlines/' + record.id + '/confirm', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ outline: record.outline }) });
+    appState.selectedProject = await request('/api/projects/' + project.id);
+    await generateNarrative(record.id, null);
+    appState.selectedProject = await request('/api/projects/' + project.id);
+    if ((appState.selectedProject.narrative_contents || []).length) {
+      appState.activeTab = 'audio';
+      renderProjectDetail();
+      showMessage('播客风章节已生成，可逐章收听；对某一章不满意可以随时向 AI 提意见。');
+    }
+  } catch (error) {
+    showMessage(error.message, true);
+  } finally { autoOutlineInFlight = false; }
 }
 
 async function createNarrativeOutline(options = {}) {
@@ -1212,6 +1261,7 @@ async function createNarrativeOutline(options = {}) {
     if (outlineArea) delete outlineArea.dataset.generating;
     renderNarrativeOutline(record);
     showMessage(auto ? '已根据确认的章节自动生成写作大纲，可在下方检查调整。' : (scope === 'chapter' ? '已沿用你确认的章节结构。请检查并调整后再确认。' : '写作大纲已生成。请检查章节结构和材料范围。'));
+    return record;
   } catch (error) {
     showMessage(error.message, true);
     const area = $('#narrative-outline-area');
@@ -1316,14 +1366,14 @@ function renderAudioPanel() {
   const mobileGuide = outputs.some(item => item.audio_available) ? '<details class="panel-card audio-extra"><summary>如何在 iPhone 收听？</summary><p>希望在“图书”中按章收听：先在 Mac“图书”中通过“文件 → 导入”添加 M4B，再连接 iPhone，在访达中选择有声书同步。首次同步前请核对访达提示。</p><p>只想快速带到手机：导出 MP3，通过隔空投送或 iCloud 云盘存入 iPhone“文件”后播放。声息目前不会同步两端的播放进度。</p></details>' : '';
   const sendMobile = outputs.some(item => item.audio_available) ? '<details class="panel-card audio-extra" id="mobile-share-card"><summary>发送到手机收听</summary><p>生成一次性领取链接后，用手机相机扫码，即可在同一 Wi-Fi 下按章收听和下载。链接只在声息运行时可访问，可随时吊销。</p><div class="audio-tool-actions"><button class="button button-outline button-small" id="create-mobile-share">生成二维码</button><button class="button button-quiet button-small" id="revoke-mobile-share">吊销已生成的链接</button></div><div id="mobile-share-result" class="mobile-share-result"></div></details>' : '';
   const sourceCard = contents.length ? '<details class="panel-card audio-extra"' + (outputs.length ? '' : ' open') + '><summary>从已确认讲稿制作新音频</summary><p>可制作整篇音频，也可逐章制作。未确认的讲稿可先整理脚本试听。</p><label class="audio-naturalize"><input type="checkbox" id="naturalize-audio"/><span>使用文本模型改善口语节奏<span class="audio-naturalize-note">额外调用一次模型；生成后仍需核对事实</span></span></label><div class="audio-source-list">' + contents.map(renderAudioSourceRow).join('') + '</div></details>' : '';
-  const empty = contents.length ? '请在下方选择讲稿，先生成音频脚本。' : '还没有音频。返回“素材”可选择原文朗读。';
+  const empty = contents.length ? '请在下方选择讲稿，先生成音频脚本。' : ((appState.selectedProject.documents || []).length ? '讲稿还没有生成。去「大纲」确认章节后会自动成稿，或点每章的“向 AI 提修改意见”调整。' : '还没有素材。先在「素材」导入文章。');
   const standalone = outputs.filter(output => {
     const content = contents.find(c => c.id === output.narrative_content_id);
     if (!content) return true;
     return !(content.chapters || []).some(chapter => output.title === content.title + ' · ' + chapter.heading || ((content.chapters.length === 1 || chapter.heading === content.title) && output.title === content.title));
   });
   const chapterBooks = contents.length ? '<section class="panel-card"><h3>按章收听与查看讲稿</h3>' + renderChapterWorkbench(contents[0]) + contents.slice(1).map(content => '<details class="previous-content"><summary>较早版本：' + escapeHtml(content.title) + '</summary>' + renderChapterWorkbench(content) + '</details>').join('') + '</section>' : '';
-  panel.innerHTML = '<section class="panel-card audio-intro"><h3>正文与声音，按章节放在一起</h3><p>点击目录即可查看这一章的讲稿与音频。文字修改后，可在同一处更新本章音频。</p></section>' + chapterBooks + (standalone.length ? '<section class="panel-card"><h3>原文朗读与整篇音频</h3><div class="audio-output-list">' + renderAudioGroups(standalone) + '</div></section>' : contents.length ? '' : '<section class="panel-card"><p>' + empty + '</p></section>') + sendMobile + mobileGuide + sourceCard + audiobookCard;
+  panel.innerHTML = '<section class="panel-card audio-intro"><h3>章节 · 收听</h3><p>每章的讲稿、音频和修改入口都在这一页。对某一章不满意，直接“向 AI 提修改意见”；要调整章节划分，去「大纲」。</p></section>' + chapterBooks + (standalone.length ? '<section class="panel-card"><h3>原文朗读与整篇音频</h3><div class="audio-output-list">' + renderAudioGroups(standalone) + '</div></section>' : contents.length ? '' : '<section class="panel-card"><p>' + empty + '</p></section>') + sendMobile + mobileGuide + sourceCard + audiobookCard;
   bindNarrativeContentEvents();
   const createShare = $('#create-mobile-share'); if (createShare) createShare.addEventListener('click', () => createMobileShare(createShare));
   const revokeShare = $('#revoke-mobile-share'); if (revokeShare) revokeShare.addEventListener('click', () => revokeMobileShare(revokeShare));
@@ -1677,7 +1727,7 @@ function bindDialogs() {
       const modelLegend = $('fieldset legend', form);
       if (modelLegend) modelLegend.textContent = '文本模型（生成内容时需要）';
       const ttsHint = $('select[name="tts_provider"]', form)?.closest('fieldset')?.querySelector('.field-hint');
-      if (ttsHint) ttsHint.textContent = 'macOS 本地语音无需云服务或密钥；生成 MP3 仍需本机安装 FFmpeg。Edge TTS 无需 Key，但属于实验性在线能力；正式对外内容请使用有授权的语音服务。';
+      if (ttsHint) ttsHint.textContent = '系统本地语音（macOS / Windows）无需云服务或密钥；生成 MP3 仍需本机安装 FFmpeg。Edge TTS 无需 Key，但属于实验性在线能力；正式对外内容请使用有授权的语音服务。';
       if (!$('#test-tts', form)) {
         const ttsFieldset = $('select[name="tts_provider"]', form)?.closest('fieldset');
         if (ttsFieldset) {
@@ -1765,7 +1815,7 @@ function bindDialogs() {
     const button = event.target; const result = $('#tts-test-result');
     try {
       setBusy(button, true, '检测中…');
-      const data = await request('/api/settings/macos-voices');
+      const data = await request('/api/settings/local-voices');
       const names = (data.voices || []).map(voice => (voice.enhanced ? '★ ' : '') + voice.name).join('、');
       result.textContent = (names ? '本机中文音色：' + names + '（★ 为增强版）。' : '') + (data.hint || '');
       result.className = 'field-hint ' + (data.enhanced_available ? 'success-hint' : '');

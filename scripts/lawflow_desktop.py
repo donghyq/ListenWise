@@ -1,4 +1,4 @@
-"""macOS desktop launcher for the local LawFlow web application."""
+"""Desktop launcher for the local LawFlow web application (macOS / Windows)."""
 from __future__ import annotations
 
 import signal
@@ -75,8 +75,14 @@ def main() -> None:
     project_root = Path(__file__).resolve().parent.parent
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
-    data_dir = Path(os.getenv("LAWFLOW_DATA_DIR", str(Path.home() / "Library/Application Support/LawFlow/data"))).expanduser()
-    legacy_dir = Path(os.getenv("LAWFLOW_LEGACY_DATA_DIR", str(Path.home() / "Projects/lawflow/data"))).expanduser()
+    if sys.platform == "win32":
+        default_data = Path(os.getenv("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "LawFlow" / "data"
+        default_legacy = Path.home() / "Projects" / "lawflow" / "data"
+    else:
+        default_data = Path.home() / "Library/Application Support/LawFlow/data"
+        default_legacy = Path.home() / "Projects/lawflow/data"
+    data_dir = Path(os.getenv("LAWFLOW_DATA_DIR", str(default_data))).expanduser()
+    legacy_dir = Path(os.getenv("LAWFLOW_LEGACY_DATA_DIR", str(default_legacy))).expanduser()
     migrate_legacy_data(data_dir, legacy_dir)
     os.environ["LAWFLOW_DATA_DIR"] = str(data_dir)
 
