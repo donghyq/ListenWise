@@ -8,6 +8,14 @@ const SCENARIOS = {
 };
 const TRANSFORM_NAMES = { condense: '内容精炼', adapt: '正常转译', enrich: '内容丰富' };
 const lengthOfWords = words => words <= 2200 ? 'short' : words <= 5000 ? 'standard' : 'deep';
+// 比例 → 绝对字数：按原文长度换算并夹在后端允许范围（400–8000）内，取整到百位。
+function wordsFromRatio(ratio) {
+  const sourceChars = Number((appState.selectedProject?.documents || []).find(doc => doc.id === ($('#plan-document')?.value))?.source_chars
+    || (appState.selectedProject?.documents || [])[0]?.source_chars || 0);
+  const fallback = Math.min(8000, Math.max(400, Number(appState.selectedProject?.project?.target_duration || 10) * 240));
+  const words = sourceChars ? Math.round(sourceChars * ratio / 100) * 100 : fallback;
+  return Math.min(8000, Math.max(400, words));
+}
 const VERIFICATION_NAMES = { source_only: '资讯转译', material_check: '材料一致性检查', external_verify: '外部事实核验' };
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -261,7 +269,9 @@ function defaultTabForProject(data) {
   if (!state.hasDocument) return 'materials';
   if (state.hasDirectAudio && !state.hasStructure) return 'audio';
   if (narratives.length) return 'audio';
-  if (!state.hasStructure) return 'structure';
+  // 刚导入素材的项目停在素材页让用户先核对解析结果；
+  // 用顶部「下一步：确认写作大纲」引导进入大纲，避免选完素材被直接甩到大纲页。
+  if (!state.hasStructure) return 'materials';
   if (state.needsExternalVerification && !state.verificationReady) return 'tasks';
   if (!state.confirmed) return 'narrative';
   return data.project.audio_enabled ? 'audio' : 'narrative';
@@ -371,7 +381,7 @@ function renderProjectDetail() {
   const preferenceText = directListening
     ? '<span>保留原文</span><span>直接转音频</span>'
     : '<span>' + TRANSFORM_NAMES[data.project.transform_mode] + '</span><span>' + VERIFICATION_NAMES[data.project.verification_mode] + '</span><span>' + data.project.target_duration + ' 分钟目标时长</span>';
-  detail.innerHTML = '<div class="detail-header"><div><p class="eyebrow">' + escapeHtml(directListening ? '原文朗读' : scenario.name) + '</p><h2>' + escapeHtml(data.project.name) + '</h2><p>' + escapeHtml(directListening ? '保留文章内容，直接生成并收听音频。' : data.project.client_name || data.project.description || scenario.description) + '</p><div class="task-preferences"><button type="button" class="tag-edit-btn" id="edit-collection" title="归类到某个收藏夹">🏷 ' + ((data.project.collection || '').trim() ? escapeHtml(data.project.collection.trim()) : '未归类 · 点此归类') + '</button>' + preferenceText + '</div></div><div class="detail-actions">' + '<button class="button button-outline button-small" id="back-to-projects">← 全部项目</button><button class="button button-outline button-small" id="export-project">导出至本机目录</button><button class="button button-outline button-small" id="reload-project">刷新任务</button><button class="button button-danger button-small" id="delete-project">删除任务</button></div></div>' + '<div class="tabbar">' + tabHtml + '</div>' + renderWorkflowHint(data, state) + '<div id="detail-panel" class="detail-panel"></div>';
+  detail.innerHTML = '<div class="detail-header"><div><p class="eyebrow">' + escapeHtml(directListening ? '原文朗读' : scenario.name) + '</p><h2>' + escapeHtml(data.project.name) + '</h2><p>' + escapeHtml(directListening ? '保留文章内容，直接生成并收听音频。' : data.project.client_name || data.project.description || scenario.description) + '</p><div class="task-preferences"><button type="button" class="tag-edit-btn" id="edit-collection" title="归类到某个收藏夹">🏷 ' + ((data.project.collection || '').trim() ? escapeHtml(data.project.collection.trim()) : '未归类 · 点此归类') + '</button>' + preferenceText + '</div></div><div class="detail-actions">' + '<button class="button button-outline button-small" id="back-to-projects">← 全部项目</button><button class="button button-outline button-small" id="export-project">导出至本机目录</button><details class="more-menu"><summary class="button button-outline button-small">更多</summary><div class="more-menu-list"><button class="button button-quiet button-small" id="reload-project">刷新任务</button><button class="button button-danger button-small" id="delete-project">删除任务</button></div></details></div></div>' + '<div class="tabbar">' + tabHtml + '</div>' + renderWorkflowHint(data, state) + '<div id="detail-panel" class="detail-panel"></div>';
   $('#edit-collection')?.addEventListener('click', () => openCollectionDialog(data.project.id));
   $$('.tabbar button', detail).forEach(button => button.addEventListener('click', () => { appState.activeTab = button.dataset.tab; renderProjectDetail(); }));
   $$('[data-workflow-next]', detail).forEach(button => button.addEventListener('click', () => { appState.activeTab = button.dataset.workflowNext; renderProjectDetail(); $('#detail-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }));
@@ -908,8 +918,6 @@ function renderStructurePanel() {
   const defaultChapter = latestPlan?.chapters?.find(chapter => chapter.enabled !== false);
   const defaultDocument = docs.find(doc => doc.id === defaultDocId) || docs[0];
   const sourceChars = Number(defaultDocument.source_chars || 0);
-  const durationWords = Math.min(8000, project.target_duration * 240);
-  const defaultWords = Math.max(400, sourceChars ? Math.min(sourceChars, durationWords) : durationWords);
   const scopeOptions = latestPlan?.document_id === defaultDocId
     ? '<label class="check-label"><input type="radio" name="narrative-scope" value="chapter" checked/> 沿用已确认的章节及素材范围</label><label class="check-label"><input type="radio" name="narrative-scope" value="document"/> 根据整份素材重新规划</label>'
     : '<label class="check-label"><input type="radio" name="narrative-scope" value="document" checked/> 使用整份素材（超出预算时提示拆分）</label>';
@@ -922,11 +930,18 @@ function renderStructurePanel() {
   const feedbackOutline = outlines.find(item => item.id === appState.structureFeedbackOutline) || outlines[0];
   panel.innerHTML = renderOutlineFeedback(feedbackOutline) + planPanel + '<section class="panel-card"><p class="eyebrow">第二步 · 自动生成播客风讲稿</p><h3>章节确认后自动成稿</h3>' +
     '<p class="form-note">' + (currentPlan?.status === 'confirmed' ? '已根据你确认的章节自动生成播客风讲稿，逐章可听、可改。' : '确认上方章节后，会自动生成大纲并逐章写出播客风讲稿；完成后直接跳到章节页收听。') + '</p>' +
-    '<details class="outline-advanced" id="outline-advanced"><summary>生成前调整参数（可选）</summary>' +
+    '<div class="narrative-quick"><div class="field"><label>改写深度</label><div class="depth-options" id="narrative-depth">' +
+      ['adapt', 'condense', 'enrich'].map(mode => '<label class="check-label depth-option"><input type="radio" name="narrative-transform" value="' + mode + '" ' + ((appState.outlineTransform || project.transform_mode) === mode ? 'checked' : '') + '/><span><b>' + TRANSFORM_NAMES[mode] + '</b><small>' + ({ adapt: '忠实转译：重组讲清，不丢信息', condense: '提炼：压缩成要点速听', enrich: '扩充：补背景，讲得更透' }[mode]) + '</small></span></label>').join('') +
+    '</div></div>' +
+    '<div class="field"><label>目标篇幅（相对原文）</label><select id="narrative-words-ratio">' +
+      '<option value="auto" selected>自动 · 跟随改写深度</option>' +
+      '<option value="0.6">精简 · 约原文 60%</option>' +
+      '<option value="1">持平 · 约原文 100%</option>' +
+      '<option value="1.5">扩充 · 约原文 150%</option>' +
+    '</select><small class="field-hint" id="narrative-word-hint"></small></div></div>' +
+    '<details class="outline-advanced" id="outline-advanced"><summary>更多参数（可选）</summary>' +
     '<div class="narrative-form"><div class="field"><label>讲稿标题</label><input id="narrative-title" value="' + escapeHtml(defaultDocument.original_name.replace(/\.[^.]+$/, '')) + '" />' + (defaultChapter ? '<small class="field-hint">默认为素材标题；整份讲稿不要沿用某一章的标题。</small>' : '') + '</div>' +
     '<div class="field"><label>目标听众</label><input id="narrative-audience" value="' + escapeHtml(scenario.audience) + '" /></div>' +
-    '<div class="field full"><label>目标成稿字数（可选）</label><input id="narrative-target-words" type="number" min="400" max="8000" step="100" value="' + defaultWords + '"/>' +
-      '<small class="field-hint" id="narrative-word-hint"></small></div>' +
     '<div class="field full"><label>表达方式</label><select id="narrative-profile"><option value="">正在加载画像…</option></select><button type="button" class="button button-outline button-small" id="manage-profile">新增 / 编辑画像</button><small class="field-hint" id="narrative-profile-hint">选项只影响讲述方式，不改变事实来源。</small></div>' +
     '<div class="field full"><label>素材范围</label><div class="narrative-scope">' + scopeOptions + '</div></div>' +
     '<div class="field full"><label class="check-label"><input type="checkbox" id="narrative-web-augment" ' + (project.web_research_mode === 'augment' || appState.autoResearchUsed ? 'checked' : '') + (supplementDocs.length ? '' : ' disabled') + '/> 补充使用已登记公开链接的资料</label>' +
@@ -934,9 +949,9 @@ function renderStructurePanel() {
     (supplementDocs.length ? '<div class="field full" id="narrative-supplemental" ' + (project.web_research_mode === 'augment' || appState.autoResearchUsed ? '' : 'hidden') + '><label>补充公开资料（需逐份勾选）</label>' + supplementOptions + '<small class="field-hint">只会读取勾选资料的正文；未勾选的网页不会进入生成请求。</small></div>' : '') +
     '<div class="field full"><label>自动联网补充（可选）</label><div class="auto-research-row"><input id="narrative-auto-query" placeholder="检索关键词；留空则用项目名" value="' + escapeHtml(appState.autoResearchQuery || '') + '"/><button type="button" class="button button-outline button-small" id="narrative-auto-research">自动检索并导入</button></div>' +
       '<small class="field-hint">默认关闭。点击后系统按关键词检索公开网页、抓取正文并导入为素材，导入的来源会默认勾选。这类来源未经人工审阅，生成时会要求写明来源名称，且不得据此断言法条条文、生效日期或裁判结论；成稿后请核对关键事实。</small></div>' + '</div>' +
-    '<div class="plan-actions"><button class="button button-primary" id="create-narrative-outline">用以上参数重新生成大纲</button></div>' +
     '</details>' +
-    '<div class="narrative-outline-area" id="narrative-outline-area"><h3>大纲</h3><p class="form-note">尚未生成大纲。请确认已在“模型设置”中配置模型服务，并允许发送原始材料。</p><div style="margin-top:10px;"><button class="button button-outline button-small" id="open-settings-narrative">打开模型设置</button></div></div></section>';
+    '<div class="plan-actions"><button class="button button-outline" id="create-narrative-outline">不确认章节，直接按当前设置生成大纲</button></div>' +
+    '<div class="narrative-outline-area" id="narrative-outline-area"><h3>大纲</h3><p class="form-note" id="narrative-outline-placeholder"></p></div></section>';
 
   $('#create-narrative-outline').addEventListener('click', createNarrativeOutline);
   bindOutlineFeedback(feedbackOutline);
@@ -956,11 +971,16 @@ function renderStructurePanel() {
   if (currentPlan) bindChapterControls();
   loadPlanHeadings();
   const updateWordHint = () => {
-    const words = Number($('#narrative-target-words').value) || defaultWords;
+    const ratio = $('#narrative-words-ratio')?.value || 'auto';
+    // auto：跟随改写深度——扩充给到原文 1.4 倍、转译持平、提炼压缩到一半。
+    const depth = $('input[name="narrative-transform"]:checked')?.value || project.transform_mode;
+    const autoRatio = depth === 'enrich' ? 1.4 : depth === 'condense' ? 0.5 : 1;
+    const words = wordsFromRatio(ratio === 'auto' ? autoRatio : Number(ratio));
     const minutes = Math.max(1, Math.round(words / 240));
-    $('#narrative-word-hint').textContent = '按项目目标 ' + project.target_duration + ' 分钟、每分钟约 240 字估算；当前约 ' + minutes + ' 分钟。' + (sourceChars && words < sourceChars ? ' 比原文短，会压缩表达。' : '');
+    $('#narrative-word-hint').textContent = '按当前设置约 ' + words.toLocaleString('zh-CN') + ' 字（原文 ' + (sourceChars || 0).toLocaleString('zh-CN') + ' 字），预计收听约 ' + minutes + ' 分钟。';
   };
-  $('#narrative-target-words').addEventListener('input', updateWordHint);
+  $$('input[name="narrative-transform"]').forEach(input => input.addEventListener('change', () => { appState.outlineTransform = input.value; updateWordHint(); }));
+  $('#narrative-words-ratio')?.addEventListener('change', updateWordHint);
   $('#narrative-web-augment')?.addEventListener('change', event => { $('#narrative-supplemental').hidden = !event.target.checked; });
   $('#narrative-auto-research')?.addEventListener('click', autoResearchSources);
   const updateSupplementState = () => {
@@ -970,6 +990,18 @@ function renderStructurePanel() {
   updateWordHint();
   updateSupplementState();
   $('#open-settings-narrative')?.addEventListener('click', () => $('#open-settings').click());
+  const outlinePlaceholder = $('#narrative-outline-placeholder');
+  if (outlinePlaceholder) {
+    if (appState.modelConfigured === false) {
+      outlinePlaceholder.textContent = '还没有生成大纲。先在「模型设置」中配置模型服务，并允许发送原始材料。';
+      outlinePlaceholder.insertAdjacentHTML('afterend', '<div style="margin-top:10px;"><button class="button button-outline button-small" id="open-settings-narrative">打开模型设置</button></div>');
+      $('#open-settings-narrative')?.addEventListener('click', () => $('#open-settings').click());
+    } else {
+      outlinePlaceholder.textContent = currentPlan?.status === 'confirmed'
+        ? '确认章节后会自动按当前设置生成大纲；也可以点上方按钮直接生成。'
+        : '先划分并确认上方章节，大纲会按当前设置自动生成。';
+    }
+  }
   if (outlines.length) renderNarrativeOutline(outlines[0]);
   if (currentPlan?.status === 'confirmed') maybeAutoCreateOutline();
   loadProfileOptions();
@@ -1279,8 +1311,10 @@ async function createNarrativeOutline(options = {}) {
     }
     if (!sourceBlockIds.length) throw new Error('当前范围内没有可用于写作的正文材料。');
     if (!$('#narrative-profile').value) throw new Error('画像列表未加载完成。请打开“模型设置”检查服务后，重新打开本页重试。');
-    const targetWords = Number($('#narrative-target-words').value);
-    if (!Number.isInteger(targetWords) || targetWords < 400 || targetWords > 8000) throw new Error('目标成稿字数须在 400–8000 字之间。');
+    const transformMode = $('input[name="narrative-transform"]:checked')?.value || appState.outlineTransform || project.transform_mode;
+    const ratioValue = $('#narrative-words-ratio')?.value || 'auto';
+    const autoRatio = transformMode === 'enrich' ? 1.4 : transformMode === 'condense' ? 0.5 : 1;
+    const targetWords = wordsFromRatio(ratioValue === 'auto' ? autoRatio : Number(ratioValue));
     const augmentChecked = !!$('#narrative-web-augment')?.checked;
     // 本轮用过自动检索就走 auto 策略：提示词要求写明来源、不得断言法条条文/生效日期/裁判结论。
     const webMode = augmentChecked ? (appState.autoResearchUsed ? 'auto' : 'augment') : (project.web_research_mode === 'discover' ? 'discover' : 'off');
@@ -1289,7 +1323,7 @@ async function createNarrativeOutline(options = {}) {
       const supplemental = await ensureDocumentLoaded(supplementalId);
       sourceBlockIds.push(...supplemental.blocks.filter(block => block.kind === 'paragraph').map(block => block.id));
     }
-    const payload = { document_id: documentId, source_plan_id: scope === 'chapter' ? scopedPlan?.id || '' : '', title: $('#narrative-title').value.trim(), source_block_ids: [...new Set(sourceBlockIds)], supplemental_document_ids: supplementalDocumentIds, audience: $('#narrative-audience').value.trim() || '法律从业者与企业法务', style_profile: $('#narrative-profile').value, target_length: lengthOfWords(targetWords), target_words: targetWords, transform_mode: project.transform_mode, minimum_output_mode: project.minimum_output_mode || 'auto', minimum_output_ratio: Number(project.minimum_output_ratio || 0.3), web_research_mode: webMode };
+    const payload = { document_id: documentId, source_plan_id: scope === 'chapter' ? scopedPlan?.id || '' : '', title: $('#narrative-title').value.trim(), source_block_ids: [...new Set(sourceBlockIds)], supplemental_document_ids: supplementalDocumentIds, audience: $('#narrative-audience').value.trim() || '法律从业者与企业法务', style_profile: $('#narrative-profile').value, target_length: lengthOfWords(targetWords), target_words: targetWords, transform_mode: transformMode, minimum_output_mode: project.minimum_output_mode || 'auto', minimum_output_ratio: Number(project.minimum_output_ratio || 0.3), web_research_mode: webMode };
     const outline = await request('/api/projects/' + appState.selectedProject.project.id + '/narrative-outlines', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     appState.selectedProject = await request('/api/projects/' + appState.selectedProject.project.id);
     const record = appState.selectedProject.narrative_outlines.find(item => item.id === outline.id) || outline;
@@ -1518,8 +1552,8 @@ function renderAudioOutput(output, chapter = null) {
   const opened = appState.openAudioScript === output.id ? ' open' : '';
   const primaryAction = output.audio_available
     ? '<button class="button button-primary button-small" data-export-audio="' + output.id + '">导出 MP3</button>' + (!output.narrative_content_id ? '<button class="button button-outline button-small" data-export-direct-audiobook="' + output.id + '">导出有声书 M4B</button>' : '')
-    : '<button class="button button-primary button-small" data-synthesize-audio="' + output.id + '" ' + (readyForMp3 && !synthesizing ? '' : 'disabled') + '>' + (synthesizing ? '合成中…' : '生成 MP3') + '</button>' + mp3Hint;
-  return '<article class="audio-output-card"><div class="audio-output-main"><div class="audio-output-head">' + chapterChip + '<span class="tag">' + statusLabel + '</span><h4>' + escapeHtml(output.title) + '</h4></div><details class="audio-tools"><summary>脚本、试听与更多操作</summary><details class="audio-script-details" data-audio-id="' + output.id + '"' + opened + '><summary>查看 / 编辑完整口播脚本</summary><div class="audio-script-body"><textarea class="audio-script-editor" data-audio-editor="' + output.id + '">' + escapeHtml(script) + '</textarea><div class="audio-script-meta"><span class="audio-script-stats">' + stats + '</span><button class="button button-outline button-small" data-save-audio="' + output.id + '">保存脚本</button></div><p class="audio-script-hint">修改脚本后，原有 MP3 会失效，需要重新生成。</p></div></details><div class="audio-tool-actions">' + (output.audio_available ? '' : player) + '<button class="button button-outline button-small" data-speak-script="' + output.id + '">浏览器校对朗读</button><button class="button button-outline button-small" data-preview-audio="' + output.id + '">合成短片试听</button>' + (output.audio_available ? '<button class="button button-outline button-small" data-synthesize-audio="' + output.id + '" ' + (readyForMp3 ? '' : 'disabled') + '>重新生成 MP3</button>' : '<button class="button button-outline button-small" data-export-audio="' + output.id + '">仅导出脚本</button>') + '</div></details></div><div class="audio-actions">' + (output.audio_available ? player : '') + primaryAction + completeToggle + '</div></article>';
+    : '<button class="button button-primary button-small" data-synthesize-audio="' + output.id + '" ' + (synthesizing ? 'disabled' : '') + '>' + (synthesizing ? '合成中…' : '生成 MP3') + '</button>' + mp3Hint;
+  return '<article class="audio-output-card"><div class="audio-output-main"><div class="audio-output-head">' + chapterChip + '<span class="tag">' + statusLabel + '</span><h4>' + escapeHtml(output.title) + '</h4></div><details class="audio-tools"><summary>脚本、试听与更多操作</summary><details class="audio-script-details" data-audio-id="' + output.id + '"' + opened + '><summary>查看 / 编辑完整口播脚本</summary><div class="audio-script-body"><textarea class="audio-script-editor" data-audio-editor="' + output.id + '">' + escapeHtml(script) + '</textarea><div class="audio-script-meta"><span class="audio-script-stats">' + stats + '</span><button class="button button-outline button-small" data-save-audio="' + output.id + '">保存脚本</button></div><p class="audio-script-hint">修改脚本后，原有 MP3 会失效，需要重新生成。</p></div></details><div class="audio-tool-actions">' + (output.audio_available ? '' : player) + '<button class="button button-outline button-small" data-speak-script="' + output.id + '">浏览器校对朗读</button><button class="button button-outline button-small" data-preview-audio="' + output.id + '">合成短片试听</button>' + (output.audio_available ? '<button class="button button-outline button-small" data-synthesize-audio="' + output.id + '">重新生成 MP3</button>' : '<button class="button button-outline button-small" data-export-audio="' + output.id + '">仅导出脚本</button>') + '</div></details></div><div class="audio-actions">' + (output.audio_available ? player : '') + primaryAction + completeToggle + '</div></article>';
 }
 
 async function saveAudioScript(id, button) {
@@ -1603,7 +1637,16 @@ async function revokeMobileShare(button) {
 }
 
 async function synthesizeAudio(audioId, button) {
-  try { setBusy(button, true, '生成 MP3…'); await request('/api/audio-outputs/' + audioId + '/synthesize', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) }); appState.selectedProject = await request('/api/projects/' + appState.selectedProject.project.id); renderAudioPanel(); showMessage('MP3 已生成，可直接播放或导出。'); } catch (error) { showMessage(error.message, true); } finally { setBusy(button, false); }
+  try {
+    // 讲稿未确认时不再禁用按钮（禁用 = 点击无反馈，像坏了），改为给出明确指引。
+    const output = (appState.selectedProject.audio_outputs || []).find(item => item.id === audioId);
+    const source = output && (appState.selectedProject.narrative_contents || []).find(content => content.id === output.narrative_content_id);
+    if (source && source.status !== 'confirmed') {
+      showMessage('这份讲稿还未确认，不能生成正式 MP3。到「章节 · 收听」页点「确认讲稿」后再生成。', true);
+      return;
+    }
+    setBusy(button, true, '生成 MP3…'); await request('/api/audio-outputs/' + audioId + '/synthesize', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) }); appState.selectedProject = await request('/api/projects/' + appState.selectedProject.project.id); renderAudioPanel(); showMessage('MP3 已生成，可直接播放或导出。');
+  } catch (error) { showMessage(error.message, true); } finally { setBusy(button, false); }
 }
 
 async function exportAudioOutput(audioId, button) {
@@ -1931,6 +1974,12 @@ async function boot() {
   initHomeSkillSection();
   initListenSection();
   checkForUpdates();
+  // 预取模型配置状态：大纲页用它区分「未配置模型」和「还没生成」，不再一律吓唬用户去开设置。
+  try {
+    const config = await request('/api/settings/provider');
+    appState.providerApiKeys = config.api_keys || {};
+    appState.modelConfigured = !!(config.base_url && Object.keys(config.api_keys || {}).length);
+  } catch (error) { appState.modelConfigured = false; }
   try { await Promise.all([loadProjects(), loadDailyBriefSubscriptions()]); } catch (error) { showMessage('无法连接本地服务：' + readableError(error), true); }
 }
 document.addEventListener('DOMContentLoaded', boot);

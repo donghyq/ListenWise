@@ -2605,6 +2605,15 @@ async def protect_chatgpt_mcp(request: Request, call_next):
     return await call_next(request)
 
 
+@app.middleware("http")
+async def revalidate_shell_pages(request: Request, call_next):
+    """入口页不缓存：否则前端 ?v= 版本号升级后，老页面拿不到新的静态资源引用。"""
+    response = await call_next(request)
+    if request.url.path in ("/", "/index.html"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 @app.get("/api/health")
 def health():
     return {"status": "ok", "product": "LawFlow", "version": __version__, "time": now_iso()}
