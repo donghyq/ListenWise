@@ -914,7 +914,8 @@ function renderStructurePanel() {
     ? '<label class="check-label"><input type="radio" name="narrative-scope" value="chapter" checked/> 沿用已确认的章节及素材范围</label><label class="check-label"><input type="radio" name="narrative-scope" value="document"/> 根据整份素材重新规划</label>'
     : '<label class="check-label"><input type="radio" name="narrative-scope" value="document" checked/> 使用整份素材（超出预算时提示拆分）</label>';
   const supplementDocs = docs.filter(doc => doc.source_url);
-  const supplementOptions = supplementDocs.map(doc => '<label class="check-label"><input type="checkbox" name="narrative-supplement" value="' + doc.id + '" ' + (doc.id === defaultDocId ? 'disabled' : '') + '/><span>' + escapeHtml(doc.original_name) + ' <small>· 已登记公开链接</small></span></label>').join('');
+  const autoImportedIds = new Set(appState.autoImportedDocIds || []);
+  const supplementOptions = supplementDocs.map(doc => '<label class="check-label"><input type="checkbox" name="narrative-supplement" value="' + doc.id + '" ' + (doc.id === defaultDocId ? 'disabled' : autoImportedIds.has(doc.id) ? 'checked' : '') + '/><span>' + escapeHtml(doc.original_name) + ' <small>· 已登记公开链接' + (autoImportedIds.has(doc.id) ? ' · 自动检索导入' : '') + '</small></span></label>').join('');
   const currentPlan = appState.activePlan;
   const planPanel = '<section class="panel-card"><p class="eyebrow">第一步 · 划分学习章节</p><h3>把材料分成适合碎片学习的章节</h3><p>每一章会单独成稿、可单独收听，适合通勤、间隙时间逐章推进。通常按材料目录自动划分即可；目录复杂或只想学部分章节时再手动挑选。</p><div class="plan-settings"><div class="field"><label>源材料<select id="plan-document">' + docs.map(doc => '<option value="' + doc.id + '" ' + (doc.id === (currentPlan?.document_id || defaultDocId) ? 'selected' : '') + '>' + escapeHtml(doc.original_name) + '</option>').join('') + '</select></label></div></div><div class="plan-actions"><button class="button button-primary" id="auto-split-plan">自动划分章节</button><button class="button button-outline" id="toggle-heading-picker">手动挑选目录章节</button></div><div id="plan-heading-selector" class="plan-heading-selector" hidden></div><details class="split-feedback" id="split-feedback"><summary>对分出来的章节不满意？写意见让 AI 重新划分</summary><p class="form-note">例如：分得太细了，把前两章合并；第三章和第五章其实是同一个主题；想按“背景→规则→实务”重新组织。</p><textarea id="split-feedback-text" rows="3" placeholder="写下你对章节划分的意见…"></textarea><div class="plan-actions"><button class="button button-outline button-small" id="resplit-with-feedback">按意见重新划分</button></div></details>' + (currentPlan ? '<div class="plan-selected-chapters"><h4>' + (currentPlan.status === 'confirmed' ? '已确认的章节' : '待确认的章节') + '</h4><p class="form-note">可修改标题、取消不需要的章节；改动后请重新确认，并在下方重新建立写作大纲。</p><div id="chapter-list" class="chapter-list">' + renderChapters(currentPlan.chapters) + '</div>' + (function(){ const total = currentPlan.chapters.length; const enabled = currentPlan.chapters.filter(c => c.enabled).length; return '<div class="plan-confirm-bar"><div class="plan-confirm-summary"><strong>已选 ' + enabled + ' / ' + total + ' 章</strong><span>' + (enabled === total ? '保持默认即可直接确认' : '已取消的章节不会生成内容') + '</span></div><button class="button button-primary" id="confirm-plan">' + (currentPlan.status === 'confirmed' ? '保存结构调整' : '确认章节结构') + '</button></div>'; })() + '</div>' : '') + '</section>';
 
@@ -928,7 +929,11 @@ function renderStructurePanel() {
       '<small class="field-hint" id="narrative-word-hint"></small></div>' +
     '<div class="field full"><label>表达方式</label><select id="narrative-profile"><option value="">正在加载画像…</option></select><button type="button" class="button button-outline button-small" id="manage-profile">新增 / 编辑画像</button><small class="field-hint" id="narrative-profile-hint">选项只影响讲述方式，不改变事实来源。</small></div>' +
     '<div class="field full"><label>素材范围</label><div class="narrative-scope">' + scopeOptions + '</div></div>' +
-    (supplementDocs.length ? '<div class="field full"><label class="check-label"><input type="checkbox" id="narrative-web-augment" ' + (project.web_research_mode === 'augment' ? 'checked' : '') + '/> 补充使用已登记公开链接的资料</label></div><div class="field full" id="narrative-supplemental" ' + (project.web_research_mode === 'augment' ? '' : 'hidden') + '><label>补充公开资料（需逐份勾选）</label>' + supplementOptions + '<small class="field-hint">只会读取勾选资料的正文；未勾选的网页不会进入生成请求。</small></div>' : '') + '</div>' +
+    '<div class="field full"><label class="check-label"><input type="checkbox" id="narrative-web-augment" ' + (project.web_research_mode === 'augment' || appState.autoResearchUsed ? 'checked' : '') + (supplementDocs.length ? '' : ' disabled') + '/> 补充使用已登记公开链接的资料</label>' +
+      (supplementDocs.length ? '' : '<small class="field-hint">项目里还没有登记过公开链接的资料。可先用下方「自动检索」导入，或在素材页手动粘贴文章链接。</small>') + '</div>' +
+    (supplementDocs.length ? '<div class="field full" id="narrative-supplemental" ' + (project.web_research_mode === 'augment' || appState.autoResearchUsed ? '' : 'hidden') + '><label>补充公开资料（需逐份勾选）</label>' + supplementOptions + '<small class="field-hint">只会读取勾选资料的正文；未勾选的网页不会进入生成请求。</small></div>' : '') +
+    '<div class="field full"><label>自动联网补充（可选）</label><div class="auto-research-row"><input id="narrative-auto-query" placeholder="检索关键词；留空则用项目名" value="' + escapeHtml(appState.autoResearchQuery || '') + '"/><button type="button" class="button button-outline button-small" id="narrative-auto-research">自动检索并导入</button></div>' +
+      '<small class="field-hint">默认关闭。点击后系统按关键词检索公开网页、抓取正文并导入为素材，导入的来源会默认勾选。这类来源未经人工审阅，生成时会要求写明来源名称，且不得据此断言法条条文、生效日期或裁判结论；成稿后请核对关键事实。</small></div>' + '</div>' +
     '<div class="plan-actions"><button class="button button-primary" id="create-narrative-outline">用以上参数重新生成大纲</button></div>' +
     '</details>' +
     '<div class="narrative-outline-area" id="narrative-outline-area"><h3>大纲</h3><p class="form-note">尚未生成大纲。请确认已在“模型设置”中配置模型服务，并允许发送原始材料。</p><div style="margin-top:10px;"><button class="button button-outline button-small" id="open-settings-narrative">打开模型设置</button></div></div></section>';
@@ -957,6 +962,7 @@ function renderStructurePanel() {
   };
   $('#narrative-target-words').addEventListener('input', updateWordHint);
   $('#narrative-web-augment')?.addEventListener('change', event => { $('#narrative-supplemental').hidden = !event.target.checked; });
+  $('#narrative-auto-research')?.addEventListener('click', autoResearchSources);
   const updateSupplementState = () => {
     const documentId = $('#plan-document').value;
     $$('input[name="narrative-supplement"]').forEach(input => { input.disabled = input.value === documentId; if (input.disabled) input.checked = false; });
@@ -1223,6 +1229,33 @@ async function maybeAutoCreateOutline() {
   } finally { autoOutlineInFlight = false; }
 }
 
+async function autoResearchSources() {
+  const button = $('#narrative-auto-research');
+  const projectId = appState.selectedProject?.project?.id;
+  if (!projectId) return;
+  const query = ($('#narrative-auto-query')?.value || '').trim();
+  try {
+    setBusy(button, true, '正在检索并导入…');
+    const result = await request('/api/projects/' + projectId + '/auto-research', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, max_sources: 3 }),
+    });
+    // 记住本轮用过自动检索：提交大纲时走 auto 策略（提示词要求标注来源、不得断言法条）。
+    appState.autoResearchUsed = true;
+    appState.autoResearchQuery = query;
+    appState.autoImportedDocIds = [...new Set([...(appState.autoImportedDocIds || []), ...(result.imported || []).map(doc => doc.id)])];
+    appState.selectedProject = await request('/api/projects/' + projectId);
+    renderProjectDetail();
+    const skipped = (result.failures || []).length;
+    showMessage(result.message + (skipped ? '（另有 ' + skipped + ' 份候选来源因正文不足或不可解析已跳过）' : ''));
+  } catch (error) {
+    showMessage(error.message || '自动检索失败，请稍后重试或手动粘贴文章链接。', true);
+  } finally {
+    setBusy(button, false);
+  }
+}
+
 async function createNarrativeOutline(options = {}) {
   const auto = !!options.auto;
   const button = $('#create-narrative-outline');
@@ -1248,8 +1281,10 @@ async function createNarrativeOutline(options = {}) {
     if (!$('#narrative-profile').value) throw new Error('画像列表未加载完成。请打开“模型设置”检查服务后，重新打开本页重试。');
     const targetWords = Number($('#narrative-target-words').value);
     if (!Number.isInteger(targetWords) || targetWords < 400 || targetWords > 8000) throw new Error('目标成稿字数须在 400–8000 字之间。');
-    const webMode = $('#narrative-web-augment')?.checked ? 'augment' : (project.web_research_mode === 'discover' ? 'discover' : 'off');
-    const supplementalDocumentIds = webMode === 'augment' ? $$('input[name="narrative-supplement"]:checked').map(input => input.value).filter(id => id !== documentId) : [];
+    const augmentChecked = !!$('#narrative-web-augment')?.checked;
+    // 本轮用过自动检索就走 auto 策略：提示词要求写明来源、不得断言法条条文/生效日期/裁判结论。
+    const webMode = augmentChecked ? (appState.autoResearchUsed ? 'auto' : 'augment') : (project.web_research_mode === 'discover' ? 'discover' : 'off');
+    const supplementalDocumentIds = augmentChecked ? $$('input[name="narrative-supplement"]:checked').map(input => input.value).filter(id => id !== documentId) : [];
     for (const supplementalId of supplementalDocumentIds) {
       const supplemental = await ensureDocumentLoaded(supplementalId);
       sourceBlockIds.push(...supplemental.blocks.filter(block => block.kind === 'paragraph').map(block => block.id));

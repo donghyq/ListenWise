@@ -298,5 +298,76 @@ class SupplementalSourcesTest(unittest.TestCase):
         self.assertEqual(outline["sections"][0]["source_block_ids"], ["doc-primary:b-00001"])
 
 
+class AutoWebResearchTest(unittest.TestCase):
+    """「自动联网补充」可选项：放宽来源范围，但换来来源标注与不得断言法条的硬约束。"""
+
+    def _blocks(self):
+        return [{"id": "doc-primary:b-00001", "document_id": "doc-primary", "kind": "paragraph",
+                 "text": "主文档正文块。", "source_locator": "第 1 段"}]
+
+    def _chapter_outline(self):
+        return {"title": "测试大纲", "target_total_words": 800, "sections": [{
+            "id": "section-1", "heading": "第一节", "purpose": "测试", "key_points": ["点"],
+            "source_block_ids": ["doc-primary:b-00001"], "target_words": 800,
+        }]}
+
+    def test_auto_mode_registered_in_outline_prompt(self):
+        """大纲阶段用 dict[mode] 直接索引，auto 没登记会 KeyError；同时确认约束进了提示词。"""
+        captured = []
+        outline_json = json.dumps({"title": "测试大纲", "sections": [{
+            "heading": "第一节", "purpose": "测试", "key_points": ["点"],
+            "source_block_ids": ["doc-primary:b-00001"],
+        }]})
+
+        def capture(messages, **kwargs):
+            captured.append(messages[-1]["content"])
+            return outline_json
+
+        request = app_main.NarrativeOutlineRequest(
+            document_id="doc-primary", title="测试大纲",
+            source_block_ids=["doc-primary:b-00001"],
+            style_profile="law_podcast_v4", transform_mode="enrich", web_research_mode="auto",
+        )
+        with patch.object(app_main, "model_chat", side_effect=capture):
+            outline = app_main.create_narrative_outline(request, self._blocks())
+        self.assertEqual(outline["sections"][0]["source_block_ids"], ["doc-primary:b-00001"])
+        self.assertTrue(captured)
+        self.assertIn("不得据此安排断言具体法条条文", captured[0])
+
+    def test_auto_mode_chapter_prompt_demands_attribution(self):
+        captured = []
+
+        def capture(messages, **kwargs):
+            captured.append(messages[-1]["content"])
+            return "# 第一节\n\n" + ("正文内容。" * 40)
+
+        with patch.object(app_main, "model_chat", side_effect=capture):
+            app_main.generate_narrative_markdown(
+                self._chapter_outline(), self._blocks(), "法务", "law_podcast_v4",
+                "enrich", "topic_learning", 5, "auto",
+            )
+        prompt = captured[0]
+        self.assertIn("写明来源名称", prompt)
+        self.assertIn("不得据此断言具体法条条文", prompt)
+        self.assertIn("生效日期", prompt)
+        self.assertIn("裁判结论", prompt)
+
+    def test_augment_mode_stays_closed_after_adding_auto(self):
+        """加了 auto 不能顺带把 augment 的封闭边界放宽。"""
+        captured = []
+
+        def capture(messages, **kwargs):
+            captured.append(messages[-1]["content"])
+            return "# 第一节\n\n" + ("正文内容。" * 40)
+
+        with patch.object(app_main, "model_chat", side_effect=capture):
+            app_main.generate_narrative_markdown(
+                self._chapter_outline(), self._blocks(), "法务", "law_podcast_v4",
+                "enrich", "topic_learning", 5, "augment",
+            )
+        self.assertIn("仅可使用用户明确导入并审阅的公开来源", captured[0])
+        self.assertNotIn("不得据此断言具体法条条文", captured[0])
+
+
 if __name__ == "__main__":
     unittest.main()

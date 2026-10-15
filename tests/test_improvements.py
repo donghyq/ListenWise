@@ -802,6 +802,52 @@ class ImprovementsTest(unittest.TestCase):
         blocked = self.client.post('/api/projects/' + project['id'] + '/web-sources', json={'title': '本机', 'url': 'http://127.0.0.1:8080/'})
         self.assertEqual(blocked.status_code, 400)
 
+    def test_project_accepts_auto_research_mode(self):
+        project = self.client.post('/api/projects', json={'name': '自动补充', 'web_research_mode': 'auto'})
+        self.assertEqual(project.status_code, 201)
+        data = self.client.get('/api/projects/' + project.json()['id']).json()['project']
+        self.assertEqual(data['web_research_mode'], 'auto')
+
+    def test_auto_research_imports_sources_and_reports_unusable_candidates(self):
+        import httpx
+        project = self.client.post('/api/projects', json={'name': '人工智能治理', 'scenario': 'topic_learning'}).json()
+        search_response = httpx.Response(
+            200,
+            content='''<rss><channel><item><title>人工智能治理公开监管动态</title><link>https://example.com/news</link><description>人工智能治理公开摘要</description></item></channel></rss>'''.encode('utf-8'),
+            request=httpx.Request('GET', 'https://www.bing.com/search'),
+        )
+        page_response = httpx.Response(
+            200,
+            headers={'content-type': 'text/html; charset=utf-8'},
+            text='<html><body><h1>公开监管动态</h1><p>' + ('正文内容。' * 40) + '</p></body></html>',
+            request=httpx.Request('GET', 'https://example.com/news'),
+        )
+        # 检索走 Bing RSS（DDG 的 post 被 mock 成离线），随后抓取正文入库。
+        with patch.object(self.main.httpx, 'post', side_effect=httpx.ConnectError('offline')), \
+             patch.object(self.main.httpx, 'get', side_effect=[search_response, page_response]):
+            result = self.client.post('/api/projects/' + project['id'] + '/auto-research', json={'query': '人工智能治理'})
+        self.assertEqual(result.status_code, 201)
+        body = result.json()
+        self.assertEqual(len(body['imported']), 1)
+        self.assertEqual(body['failures'], [])
+        self.assertIn('未经人工审阅', body['message'])
+        # 自动导入的素材必须登记来源链接，否则无法追溯、也无法作为补充资料使用。
+        document = self.client.get('/api/documents/' + body['imported'][0]['id']).json()
+        self.assertEqual(document['source_url'], 'https://example.com/news')
+
+        # 候选来源都提不出正文时应明确报错，而不是留下一份空素材。
+        unusable = httpx.Response(
+            200,
+            headers={'content-type': 'text/html; charset=utf-8'},
+            text='<html><body><p>需要登录后查看</p></body></html>',
+            request=httpx.Request('GET', 'https://example.com/news'),
+        )
+        with patch.object(self.main.httpx, 'post', side_effect=httpx.ConnectError('offline')), \
+             patch.object(self.main.httpx, 'get', side_effect=[search_response, unusable]):
+            failed = self.client.post('/api/projects/' + project['id'] + '/auto-research', json={'query': '人工智能治理'})
+        self.assertEqual(failed.status_code, 502)
+        self.assertIn('手动粘贴', failed.json()['detail'])
+
     def test_real_ffmpeg_merge_and_measured_duration(self):
         path = self.main.DATA_DIR / 'fixture.mp3'
         subprocess.run(['ffmpeg','-v','error','-f','lavfi','-i','sine=frequency=440:duration=1','-y',str(path)], check=True)

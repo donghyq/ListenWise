@@ -155,7 +155,7 @@ class ProjectCreate(BaseModel):
     audio_enabled: bool = True
     minimum_output_mode: Literal["auto", "none", "custom"] = "auto"
     minimum_output_ratio: float = Field(default=0.3, ge=0.1, le=1.0)
-    web_research_mode: Literal["off", "discover", "augment"] = "discover"
+    web_research_mode: Literal["off", "discover", "augment", "auto"] = "discover"
     collection: str = Field(default="", max_length=60)
 
 
@@ -342,7 +342,7 @@ class NarrativeOutlineRequest(BaseModel):
     target_duration: Literal[3, 5, 10, 20, 30] = 10
     minimum_output_mode: Literal["auto", "none", "custom"] = "auto"
     minimum_output_ratio: float = Field(default=0.3, ge=0.1, le=1.0)
-    web_research_mode: Literal["off", "discover", "augment"] = "discover"
+    web_research_mode: Literal["off", "discover", "augment", "auto"] = "discover"
     revision_of: str = ""
     revision_instructions: str = Field(default="", max_length=3000)
 
@@ -2157,6 +2157,8 @@ def create_narrative_outline(request: NarrativeOutlineRequest, blocks: list[dict
         "off": "不使用联网检索；只根据已导入材料规划。",
         "discover": "联网检索仅用于发现候选公开来源；不要把搜索结果直接写入大纲。",
         "augment": "允许使用用户后续明确导入的公开来源补充背景；未导入、未审阅的网页不得写入大纲。",
+        "auto": "允许使用系统自动检索并导入的公开来源补充背景、行业数据和公开案例；这类来源未经人工审阅，"
+                "不得据此安排断言具体法条条文、生效日期或裁判结论的章节。",
     }[request.web_research_mode]
     prompt = """你是资深法律内容主笔。请基于下列已选材料规划一篇适合听、讲或学习的中文专业内容大纲。
 
@@ -2291,6 +2293,11 @@ def generate_narrative_markdown(outline: dict, blocks: list[dict], audience: str
         "off": "不得使用联网检索内容。",
         "discover": "联网检索仅用于候选来源发现；不得把未导入、未审阅的网页事实写入正文。",
         "augment": "仅可使用用户明确导入并审阅的公开来源；来源之外的网页信息不得写入正文。",
+        # auto 放宽了来源范围（系统自动检索的公开来源），但换来两条更硬的约束：
+        # 必须写明来源名称，且不得据此断言法条、日期、裁判结论——这类事实只能来自项目内材料。
+        "auto": "可使用系统自动检索并导入的公开来源补充背景、行业数据和公开案例；这类来源未经人工逐条审阅，"
+                "引用时必须写明来源名称，且不得据此断言具体法条条文、生效日期或裁判结论（这类事实只能取自项目内材料）；"
+                "来源之外的网页信息仍不得写入正文。",
     }.get(web_research_mode, "不得使用联网检索内容。")
     rendered_sections, section_sources = [], []
     GENERATION_PROGRESS[progress_key] = {"status": "running", "total": len(outline["sections"]), "current": 0, "heading": ""}
@@ -3220,17 +3227,18 @@ def get_web_page_title(url: str):
     return {"title": title[:120]}
 
 
-@app.post("/api/web-search")
-def search_web_sources(payload: WebSearchRequest):
-    """Search public web pages but leave import decisions entirely to the user."""
-    query = clean_text(payload.query)
-    terms = search_terms(query)
-    errors = []
-    results = []
+def collect_web_results(query: str, max_results: int) -> tuple[list[dict], list[str]]:
+    """检索公开网页，返回 (候选结果, 检索后端错误)。导入决策完全交给调用方。
+
+    两个后端依次尝试，任一个拿到结果即停；结果按关键词命中过滤，避免返回无关网页。
+    """
+    terms = search_terms(clean_text(query))
+    errors: list[str] = []
+    results: list[dict] = []
     seen_urls = set()
     for backend in (_search_ddg, _search_bing_rss):
         try:
-            raw_results = backend(query, payload.max_results * 2)
+            raw_results = backend(query, max_results * 2)
         except (httpx.HTTPError, ET.ParseError) as error:
             errors.append(str(error))
             continue
@@ -3243,10 +3251,18 @@ def search_web_sources(payload: WebSearchRequest):
                 continue
             seen_urls.add(url)
             results.append(item)
-            if len(results) >= payload.max_results:
+            if len(results) >= max_results:
                 break
         if results:
             break
+    return results, errors
+
+
+@app.post("/api/web-search")
+def search_web_sources(payload: WebSearchRequest):
+    """Search public web pages but leave import decisions entirely to the user."""
+    query = clean_text(payload.query)
+    results, errors = collect_web_results(query, payload.max_results)
     status = "ok" if results else "limited" if errors else "no_match"
     notice = ("搜索结果仅供发现公开材料；请逐条确认来源后再导入。" if results else
               "检索服务本次未返回可靠结果。可以稍后重试，或直接粘贴文章链接导入。" if errors else
@@ -3272,6 +3288,64 @@ def import_web_source(project_id: str, payload: WebSourceImport):
     if len(content) < 100:
         raise HTTPException(422, "该网页未提取到足够正文，可能需要登录或使用动态加载；请手动粘贴正文。")
     return save_text_source(project_id, payload.title, content[:500000], url)
+
+
+class AutoResearchRequest(BaseModel):
+    # 留空时用项目名作关键词；max_sources 是「抓到可用正文」的目标份数。
+    query: str = Field(default="", max_length=200)
+    max_sources: int = Field(default=3, ge=1, le=8)
+
+
+def fetch_web_article(url: str) -> str:
+    """抓取公开网页正文；失败或未提取到足够正文时抛 HTTPException。"""
+    address = valid_public_url(url)
+    try:
+        response = httpx.get(address, headers={"User-Agent": "LawFlow/0.1"}, follow_redirects=True, timeout=25.0)
+        response.raise_for_status()
+    except httpx.HTTPError as error:
+        raise HTTPException(502, "无法读取该公开网页，请检查链接或改为手动粘贴正文。") from error
+    content_type = response.headers.get("content-type", "")
+    if "html" not in content_type.lower() and content_type:
+        raise HTTPException(400, "该链接不是可直接解析的网页。")
+    content = html_to_article_text(response.text)
+    if len(content) < 100:
+        raise HTTPException(422, "该网页未提取到足够正文，可能需要登录或使用动态加载。")
+    return content[:500000]
+
+
+@app.post("/api/projects/{project_id}/auto-research", status_code=201)
+def auto_research_project_sources(project_id: str, payload: AutoResearchRequest):
+    """自动检索公开网页并导入为补充素材，省去逐个搜索和粘贴。
+
+    与手动导入的唯一区别是「未经人工逐条审阅」：这些来源只在
+    web_research_mode=auto 下允许进入正文，且提示词会要求标注来源、
+    不得据此断言具体法条或裁判结论。默认关闭，用户显式点按才触发。
+    """
+    project = project_or_404(project_id)
+    query = clean_text(payload.query) or clean_text(project["name"])
+    if not query:
+        raise HTTPException(400, "请先填写检索关键词。")
+    results, errors = collect_web_results(query, payload.max_sources * 2)
+    if not results:
+        raise HTTPException(502, "检索服务未返回可靠结果，可换更具体的关键词重试，或手动粘贴文章链接。" if errors
+                            else "检索服务已响应，但没有匹配的公开网页。请换关键词，或手动粘贴文章链接。")
+    imported, failures = [], []
+    for item in results:
+        if len(imported) >= payload.max_sources:
+            break
+        try:
+            imported.append(save_text_source(project_id, item["title"], fetch_web_article(item["url"]), item["url"]))
+        except HTTPException as error:
+            failures.append({"title": item["title"], "url": item["url"], "reason": error.detail})
+    if not imported:
+        raise HTTPException(502, "检索到候选来源，但没有一份能提取到可用正文；请手动粘贴文章链接导入。")
+    return {
+        "project_id": project_id,
+        "query": query,
+        "imported": imported,
+        "failures": failures,
+        "message": "已自动导入 {} 份公开资料，在下方逐份勾选即可使用。这些来源未经人工审阅，生成时会要求标注来源，成稿后请核对关键事实。".format(len(imported)),
+    }
 
 
 @app.get("/api/documents/{document_id}")
@@ -3754,8 +3828,8 @@ def create_narrative_outline_route(project_id: str, payload: NarrativeOutlineReq
     supplemental_docs = {block["document_id"] for block in blocks if block["document_id"] != payload.document_id}
     if supplemental_docs != set(payload.supplemental_document_ids):
         raise HTTPException(400, "补充资料与选定材料块不一致，请重新选择。")
-    if supplemental_docs and payload.web_research_mode != "augment":
-        raise HTTPException(400, "只有启用‘已选公开来源补充’后，才能使用补充资料。")
+    if supplemental_docs and payload.web_research_mode not in ("augment", "auto"):
+        raise HTTPException(400, "只有启用‘已选公开来源补充’或‘自动联网补充’后，才能使用补充资料。")
     for block in blocks:
         if block["document_id"] in supplemental_docs:
             if not block["source_url"]:
