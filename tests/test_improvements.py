@@ -1134,3 +1134,32 @@ class ImprovementsTest(unittest.TestCase):
     def test_reveal_endpoint_rejects_outside_paths(self):
         response = self.client.post('/api/reveal-in-finder', json={'path': '/etc/hosts'})
         self.assertEqual(response.status_code, 403)
+
+    def test_bundled_ffmpeg_registered_into_path(self):
+        """随包 FFmpeg 目录必须注入 PATH：否则「生成 MP3」在没装 FFmpeg 的 Windows 上必然 400。"""
+        import shutil
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / 'tools' / 'ffmpeg'
+            exe_dir = root / 'ffmpeg-9.0.2-essentials_build' / 'bin'
+            exe_dir.mkdir(parents=True)
+            exe_name = 'ffmpeg.exe' if sys.platform == 'win32' else 'ffmpeg'
+            (exe_dir / exe_name).write_bytes(b'fake')
+            original = os.environ.get('PATH', '')
+            try:
+                found = self.main.register_bundled_ffmpeg([root])
+                self.assertEqual([exe_dir], found)
+                self.assertEqual(os.environ['PATH'].split(os.pathsep)[0], str(exe_dir))
+                self.assertTrue(shutil.which('ffmpeg'))
+                # Windows 下 which 返回的实际大小写可能是 .EXE，按路径比较不区分大小写
+                self.assertEqual(Path(shutil.which('ffmpeg')).resolve(), (exe_dir / exe_name).resolve())
+            finally:
+                os.environ['PATH'] = original
+
+    def test_bundled_ffmpeg_missing_root_is_noop(self):
+        original = os.environ.get('PATH', '')
+        try:
+            found = self.main.register_bundled_ffmpeg([Path('Z:/definitely-not-exist') / 'ffmpeg'])
+            self.assertEqual(found, [])
+            self.assertEqual(os.environ.get('PATH', ''), original)
+        finally:
+            os.environ['PATH'] = original

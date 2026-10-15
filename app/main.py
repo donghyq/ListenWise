@@ -56,6 +56,45 @@ else:
 PROJECTS_DIR = DATA_DIR / "projects"
 EXPORTS_DIR = DATA_DIR / "exports"
 DB_PATH = DATA_DIR / "app.db"
+
+
+def register_bundled_ffmpeg(search_roots: list[Path] | None = None) -> list[Path]:
+    """自动发现随包分发的 FFmpeg 并注入 PATH 前缀。
+
+    Windows 用户普遍没有把 FFmpeg 装进 PATH，直接 which('ffmpeg') 会失败，
+    导致「生成 MP3」按钮请求永远返回 400（前端提示又短暂，看起来像没反应）。
+    搜索顺序：打包资源目录（_MEIPASS/tools/ffmpeg[./*/bin]）→ 项目 tools/ffmpeg/。
+    返回实际生效的可执行目录列表（供测试断言）。
+    """
+    exe_name = "ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"
+    if search_roots is None:
+        roots: list[Path] = []
+        if getattr(sys, "frozen", False):
+            roots.append(Path(getattr(sys, "_MEIPASS", ROOT_DIR)) / "tools" / "ffmpeg")
+        roots.append(ROOT_DIR / "tools" / "ffmpeg")
+    else:
+        roots = list(search_roots)
+    found: list[Path] = []
+    path_value = os.environ.get("PATH", "")
+    path_entries = path_value.split(os.pathsep) if path_value else []
+    for root in roots:
+        if not root.is_dir():
+            continue
+        candidate_dirs = [root, *sorted(root.glob("*/bin")), *sorted(root.glob("*/*/bin"))]
+        for candidate in candidate_dirs:
+            if not candidate.is_dir() or not (candidate / exe_name).exists():
+                continue
+            resolved = str(candidate)
+            if resolved not in path_entries:
+                path_entries.insert(0, resolved)
+                os.environ["PATH"] = os.pathsep.join(path_entries)
+                path_entries = os.environ["PATH"].split(os.pathsep)
+            if resolved not in [str(item) for item in found]:
+                found.append(candidate)
+    return found
+
+
+register_bundled_ffmpeg()
 DEFAULT_EXPORT_DIR = Path(os.getenv("LAWFLOW_EXPORT_DIR", str(Path.home() / "Desktop" / "ai_law"))).expanduser()
 
 for directory in (DATA_DIR, PROJECTS_DIR, EXPORTS_DIR, DATA_DIR / "temp", DATA_DIR / "logs"):
