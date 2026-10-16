@@ -2087,6 +2087,11 @@ SOURCE_BUDGET_CHARS = 60000  # DeepSeek 128K 上下文下安全的一次性素�
 GENERATION_PROGRESS: dict[str, dict] = {}  # outline_id -> {status,total,current,heading}，供前端轮询逐节写作进度
 
 
+def strip_written_markers(text: str) -> str:
+    """把口播稿里漏网的书面强调标记（**加粗标签** 等）转成平文，保留正文事实不动。"""
+    return re.sub(r"\*\*([^*]+)\*\*", r"\1", text)
+
+
 def source_dossier(blocks: list[dict], max_chars_per_block: int = 2600, max_total_chars: int = SOURCE_BUDGET_CHARS) -> str:
     parts, used = [], 0
     for block in blocks:
@@ -2359,12 +2364,20 @@ def generate_narrative_markdown(outline: dict, blocks: list[dict], audience: str
         scenario_config = CONTENT_SCENARIOS[scenario]
         podcast_profile = style_profile == PODCAST_CHAPTER_PROFILE
         if podcast_profile:
-            # 深度播客改写：深度优先于篇幅（podcast-rewriter 红线）。
+            # 深度播客改写：深度优先于篇幅（podcast-rewriter 红线），口播稿形态与
+            # generate_chapter_podcast_markdown 对齐：连贯口播段落，不用书面结构。
             length_instruction = "目标长度：{words} 字左右（目标区间，允许上下两成浮动）".format(words=section["target_words"])
-            budget_rule = "5. 字数是目标区间而非硬性上限：材料扎实时宁可讲透，不能为凑字数删掉关键事实、专家观点、数据或规则细节；只有明显超出区间两成以上时，才删减重复例证和过渡句。"
+            budget_rule = ("5. 字数是目标区间而非硬性上限：材料扎实时可以放宽到目标的一倍半以内，但不得超过两倍；"
+                           "超出时优先删减重复例证、冗余铺垫和过渡句，不删关键事实、数字、日期与规则细节。")
+            form_rule = ("4. 这是给人听的口播稿，不是给人看的文章：通篇写成连贯的口播段落，不要小标题、项目符号、"
+                         "加粗标签或冒号引导的列举式。书面标签必须改写成口语引导，例如："
+                         "不要写“**西班牙。** 2026年7月28日，西班牙部长会议批准……”，要写“我们先看西班牙。2026年7月28日，西班牙部长会议批准了……”；"
+                         "不要写“电力自由市场：自2027年11月25日起……”，要写“先说电力自由市场。从2027年11月底开始……”。"
+                         "“我们先看……”“你可能会问……”这类引导语可以自然使用；每个知识层收尾用一两句收束核心判断。")
         else:
             length_instruction = "目标长度：{words} 字左右（硬性上限，最多超出一到两成）".format(words=section["target_words"])
             budget_rule = "5. 字数预算是硬性要求：材料过多时先删减次要细节、重复例证和过渡句，不要靠压缩句子密度塞进更多事实；写完自查一遍，明显超出预算就删到预算以内。"
+            form_rule = "4. 可使用小标题，但不要重复总标题。只输出这一节的 Markdown 正文，不要输出来源列表。"
         prompt = """请撰写中文法律内容中的一个完整章节或单集讲稿。
 
 应用场景：{scenario}
@@ -2386,11 +2399,10 @@ def generate_narrative_markdown(outline: dict, blocks: list[dict], audience: str
 1. 只根据下方材料写作，不得编造材料外的法规、案例、事实、数字或引述。
 2. 不要出现“作为 AI”“根据材料显示”“本节内容仅供参考”等元话语或免责声明；文章会在页面层面另行标注审阅状态。
 3. 使用自然连贯、适合朗读的段落，解释必要术语和因果关系；不要把材料简单压缩成项目符号，也不要使用僵硬的三段式总结。
-4. 可使用小标题，但不要重复总标题。只输出这一节的 Markdown 正文，不要输出来源列表。
-{budget_rule}
+{form_rule}{budget_rule}
 
 本节材料：
-{dossier}""".format(scenario=scenario_config["name"], title=outline["title"], heading=section["heading"], purpose=section.get("purpose", ""), audience=audience, duration=target_duration, length_instruction=length_instruction, transform_name=transform["name"], transform_description=transform["description"], style=profile["instruction"], quality_rules=scenario_quality_rules(scenario), research_instruction=research_instruction, points=points, budget_rule=budget_rule, dossier=dossier)
+{dossier}""".format(scenario=scenario_config["name"], title=outline["title"], heading=section["heading"], purpose=section.get("purpose", ""), audience=audience, duration=target_duration, length_instruction=length_instruction, transform_name=transform["name"], transform_description=transform["description"], style=profile["instruction"], quality_rules=scenario_quality_rules(scenario), research_instruction=research_instruction, points=points, form_rule=form_rule, budget_rule=budget_rule, dossier=dossier)
         prompt += "\n全文结构：" + " → ".join(item["heading"] for item in outline["sections"])
         if reviewer_guidance:
             prompt += "\n\n用户核对意见（必须遵守）：" + reviewer_guidance
@@ -2398,9 +2410,35 @@ def generate_narrative_markdown(outline: dict, blocks: list[dict], audience: str
             prompt += "\n请将以下开场思路写成实际口播正文，不照抄写作指令：" + outline.get("opening_angle", "")
         if section_index == len(outline["sections"]) - 1:
             prompt += "\n请将以下收束思路写成实际结尾，不照抄写作指令：" + outline.get("closing_angle", "")
-        section_text = model_chat([{"role": "system", "content": "你是严谨的法律知识内容作者，忠实于材料，不编造事实。"}, {"role": "user", "content": prompt}], temperature=0.55, max_tokens=max(1200, min(8000, section["target_words"] * 2)))
+        system_prompt = ("你是面向专业听众的深度播客主播，忠实于材料，不编造事实。"
+                          "用说的语言写作：像在对一位聪明的听众讲课，而不是在写文章。") if podcast_profile \
+            else "你是严谨的法律知识内容作者，忠实于材料，不编造事实。"
+        section_text = model_chat([{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}], temperature=0.55, max_tokens=max(1200, min(8000, section["target_words"] * 2)))
         # 模型经常自己重复本节标题；统一去掉正文开头的一至多行标题，避免与下方拼接的小标题重复。
         section_text = re.sub(r"^(?:#{1,6}[ \t]+[^\n]*\r?\n+)+", "", section_text.strip()).strip()
+        # per-section 生成撞 token 上限时会在句中截断；退回到最后一个完整句，避免半句话入库。
+        if section_text and not section_text.rstrip().endswith(("。", "！", "？", "”", "）")):
+            cut = max(section_text.rfind(mark) for mark in ("。", "！", "？"))
+            if cut > 0:
+                section_text = section_text[:cut + 1]
+        if podcast_profile:
+            # 口播稿不应残留书面强调标记；漏网的加粗标签统一转为平文。
+            section_text = strip_written_markers(section_text)
+            # 深度播客深度优先，但超出目标两倍多时逐章压缩；单章输入小，
+            # 不会撞 token 上限，比整稿压缩可靠（整稿压缩偶发截断会被守卫拒绝）。
+            section_target = int(section.get("target_words") or 0)
+            if section_target >= 200 and len(section_text) > section_target * 2.2:
+                try:
+                    compressed = model_chat([
+                        {"role": "system", "content": "你是严格的播客稿编辑。只做删减和压缩，不改写事实。"},
+                        {"role": "user", "content": "下面的单章口播稿超出目标篇幅，目前约 {current} 字，目标是约 {target} 字。请压缩到约 {target} 字：输出长度是硬约束，不得超过目标的1.5倍。逐段做减法而不是保留原句微调；保持口播段落形态（不加粗标签、不用冒号列举、不用小标题），保留全部关键事实、数字、日期、限制条件和结论；删掉重复表述、冗余铺垫和次要细节。不得新增内容，不得改变立场或结论。只输出压缩后的口播正文，不要标题。\n\n{body}".format(current=len(section_text), target=section_target, body=section_text)},
+                    ], temperature=0.3, max_tokens=min(8000, max(1200, section_target * 2)))
+                    compressed = strip_written_markers(compressed.strip())
+                    if (compressed and compressed.endswith(("。", "！", "？", "”", "）"))
+                            and "##" not in compressed and len(compressed) < len(section_text)):
+                        section_text = compressed
+                except HTTPException:
+                    pass  # 压缩服务不可用时保留原章，只影响篇幅不影响完整性
         rendered_sections.append("## {}\n\n{}".format(section["heading"], section_text))
         section_sources.append({"section_id": section["id"], "heading": section["heading"], "source_block_ids": section["source_block_ids"]})
     GENERATION_PROGRESS[progress_key] = {"status": "done", "total": len(outline["sections"]), "current": len(outline["sections"]), "heading": ""}
@@ -2427,10 +2465,18 @@ def generate_narrative_markdown(outline: dict, blocks: list[dict], audience: str
             try:
                 condensed = model_chat([
                     {"role": "system", "content": "你是严格的播客稿编辑。只做删减和压缩，不改写事实。"},
-                    {"role": "user", "content": "下面的讲稿严重超出目标篇幅，目前约 {current} 字，目标是约 {target} 字。请压缩到约 {target} 字：保留 Markdown 的 #/## 标题结构，保留全部关键事实、数字、日期、限制条件和结论；删掉重复表述、冗余铺垫和次要细节。不得新增内容，不得改变立场或结论。只输出压缩后的 Markdown。\n\n{body}".format(current=output_chars, target=target_total, body=markdown)},
-                ], temperature=0.3, max_tokens=min(16000, max(2000, target_total * 2)))
+                    {"role": "user", "content": "下面的讲稿严重超出目标篇幅，目前约 {current} 字，目标是约 {target} 字。请压缩到约 {target} 字：输出长度是硬约束，不得超过目标的1.2倍，宁可大幅删减冗余例证和铺垫也要达标。逐段做减法而不是保留原句微调。保留 Markdown 的 #/## 标题结构{podcast_form}，保留全部关键事实、数字、日期、限制条件和结论；删掉重复表述、冗余铺垫和次要细节。不得新增内容，不得改变立场或结论。只输出压缩后的 Markdown。\n\n{body}".format(
+                        current=output_chars, target=target_total, body=markdown,
+                        podcast_form="和口播段落形态（不加粗标签、不用冒号列举、不用小标题）" if podcast_total else "")},
+                ], temperature=0.3, max_tokens=min(8000, max(2000, target_total * 2)))
                 condensed = condensed.strip()
                 if "#" not in condensed:
+                    break
+                # 防截断守卫：压缩输出被 max_tokens 截断时会静默丢掉末尾章节，
+                # 表现为章节数变少或结尾戛然而止；此时宁可保留原稿也不采纳。
+                if condensed.count("## ") < markdown.count("## "):
+                    break
+                if not condensed.rstrip().endswith(("。", "！", "？", "”", "）")):
                     break
                 condensed_chars = len(re.sub(r"[#*_`>\-\[\]]", "", condensed))
                 # 只在压缩结果确实更短且没有失控缩水（不低于目标七成）时才采用
@@ -2439,6 +2485,9 @@ def generate_narrative_markdown(outline: dict, blocks: list[dict], audience: str
                 markdown = condensed
                 output_chars = condensed_chars
                 overrun_condensed = True
+                if podcast_total:
+                    # 压缩改写会重新引入书面标记（加粗标签等）；统一再清理一道。
+                    markdown = strip_written_markers(markdown)
             except HTTPException:
                 break  # 模型服务不可用时保留原稿，仅在下方的长度检查中提示
     model_metadata = {"provider_name": settings.get("provider_name", ""), "base_url": settings.get("base_url", ""), "model_name": settings.get("model_name", ""), "generated_at": now_iso(), "style_profile": style_profile, "transform_mode": transform_mode, "scenario": scenario, "target_duration": target_duration, "web_research_mode": web_research_mode, "quality_rules": SCENARIO_QUALITY_RULES.get(scenario, []), "output_floor": floor, "source_chars": source_chars, "output_chars": output_chars, "target_total_words": target_total, "overrun_condensed": overrun_condensed, "floor_status": "pass" if not floor or output_chars >= floor else "review"}

@@ -7,7 +7,7 @@ import sys
 import tempfile
 import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
@@ -399,6 +399,41 @@ class ImprovementsTest(unittest.TestCase):
             text, _, _ = self.main.generate_narrative_markdown(outline, self.main.read_blocks(source['id']), '读者', 'law_podcast_v4')
         self.assertNotIn('请从问题切入', text)
         self.assertIn('请从问题切入', model.call_args.args[0][-1]['content'])
+
+    def test_podcast_profile_strips_written_markers_and_rejects_truncated_condensation(self):
+        project, source, ids, content = self.make_content()
+        # 各章 target_words < 200：跳过逐章压缩，让整稿压缩兜底被触发。
+        outline = {'title': '标题', 'opening_angle': '', 'closing_angle': '', 'target_total_words': 600,
+                   'sections': [{'id': 's1', 'heading': '第一章', 'source_block_ids': ids, 'target_words': 100},
+                                {'id': 's2', 'heading': '第二章', 'source_block_ids': ids, 'target_words': 100}]}
+        blocks = self.main.read_blocks(source['id'])
+        body1 = '**巴西。** 2026年8月12日，卢拉总统签署四项能源法令。' + '第一章展开的完整口播正文。' * 150
+        body2 = '第二章的口播正文，用连贯段落讲清楚。' * 100
+        # 压缩输出被 token 截断（丢掉第二章）时必须拒绝采纳。
+        truncated_condensed = '# 标题\n\n## 第一章\n\n' + '压缩后只剩第一章的长正文。' * 200
+        outputs = [body1 + '结尾收束。', body2 + '结尾收束。', truncated_condensed]
+        with patch.object(self.main, 'model_chat', side_effect=outputs):
+            text, _, _ = self.main.generate_narrative_markdown(outline, blocks, '读者', 'law_podcast_v4')
+        self.assertNotIn('**', text)
+        # 截断的整稿压缩被守卫拒绝，原稿两章都保留。
+        self.assertIn('第一章展开的完整口播正文', text)
+        self.assertIn('第二章的口播正文', text)
+
+    def test_podcast_profile_condenses_oversized_section_in_place(self):
+        project, source, ids, content = self.make_content()
+        outline = {'title': '标题', 'opening_angle': '', 'closing_angle': '', 'target_total_words': 5000,
+                   'sections': [{'id': 's1', 'heading': '第一章', 'source_block_ids': ids, 'target_words': 500}]}
+        blocks = self.main.read_blocks(source['id'])
+        long_section = '先看巴西的能源法令，这是本章的关键事实。' * 100  # 1800 字 > 500*2.2
+        condensed = '先看巴西的能源法令，这是压缩后的口播正文。'
+        model = Mock(side_effect=[long_section, condensed])
+        with patch.object(self.main, 'model_chat', model):
+            text, _, _ = self.main.generate_narrative_markdown(outline, blocks, '读者', 'law_podcast_v4')
+        # 逐章压缩生效：超长章节被压缩到目标区间。
+        self.assertIn('压缩后的口播正文', text)
+        self.assertNotIn(long_section[:20] * 2, text)
+        # 整稿不超限（5000*1.8+800），只有写作+逐章压缩两次调用，无整稿压缩。
+        self.assertEqual(model.call_count, 2)
 
     def test_audio_edit_preview_and_narrative_only_export(self):
         project, source, ids, content = self.make_content()
