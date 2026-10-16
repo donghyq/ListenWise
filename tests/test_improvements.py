@@ -1144,6 +1144,8 @@ class ImprovementsTest(unittest.TestCase):
             exe_dir.mkdir(parents=True)
             exe_name = 'ffmpeg.exe' if sys.platform == 'win32' else 'ffmpeg'
             (exe_dir / exe_name).write_bytes(b'fake')
+            # POSIX 上 shutil.which 要求可执行位；Windows 靠扩展名判断，此行在 win 上是 no-op
+            os.chmod(exe_dir / exe_name, 0o755)
             original = os.environ.get('PATH', '')
             try:
                 found = self.main.register_bundled_ffmpeg([root])
@@ -1152,8 +1154,9 @@ class ImprovementsTest(unittest.TestCase):
                 self.assertTrue(shutil.which('ffmpeg'))
                 # Windows 下 which 返回的实际大小写可能是 .EXE，按路径比较不区分大小写
                 self.assertEqual(Path(shutil.which('ffmpeg')).resolve(), (exe_dir / exe_name).resolve())
-                # 本机 PATHEXT 被改成只剩 .CPL 时也必须兜底补上 .EXE，否则 which 永远找不到 ffmpeg.exe
-                self.assertIn('.EXE', [item.upper() for item in os.environ.get('PATHEXT', '').split(os.pathsep)])
+                # 本机 PATHEXT 被改成只剩 .CPL 时也必须兜底补上 .EXE，否则 which 永远找不到 ffmpeg.exe（仅 Windows 有 PATHEXT）
+                if sys.platform == 'win32':
+                    self.assertIn('.EXE', [item.upper() for item in os.environ.get('PATHEXT', '').split(os.pathsep)])
             finally:
                 os.environ['PATH'] = original
 
