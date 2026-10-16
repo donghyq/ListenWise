@@ -6,7 +6,7 @@ LawFlow 面向客户时采用“本地桌面 App + GitHub Releases”模式，�
 
 ## 下载与仓库
 
-源码与正式安装包使用同一个公开仓库：`hey-elaine/lawflow`。通过该仓库的 Releases 页面下载安装包；只有签名、公证和验证均通过的构建才发布为正式版本。
+源码与正式安装包使用同一个公开仓库：`donghyq/ListenWise`。通过该仓库的 Releases 页面下载安装包；只有签名、公证和验证均通过的构建才发布为正式版本。
 
 应用默认从该仓库检查更新；开发部署可以用 `LAWFLOW_RELEASE_REPOSITORY=owner/repo` 覆盖。不要将客户材料、构建日志或签名凭据提交到仓库或发布附件。
 
@@ -32,7 +32,7 @@ LawFlow 面向客户时采用“本地桌面 App + GitHub Releases”模式，�
 4. 创建并推送完全一致的标签：`v0.2.0`。
 5. GitHub Actions 在 `macos-15` 和 `macos-15-intel` 分别构建 arm64、x86_64 安装包。
 6. 工作流执行 Developer ID 签名、Apple 公证、staple 和 Gatekeeper 校验。
-7. 两个 DMG 与 SHA256 自动发布到 `hey-elaine/lawflow` 的 Releases 页面。
+7. 两个 DMG 与 SHA256 自动发布到 `donghyq/ListenWise` 的 Releases 页面。
 
 标签版本与 `app/version.py` 不一致，或缺少证书、公证密钥时，工作流会失败，不会发布未签名客户包。
 

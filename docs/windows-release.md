@@ -5,7 +5,7 @@
 ## 从源码运行（Windows）
 
 ```powershell
-git clone https://github.com/hey-elaine/lawflow.git
+git clone https://github.com/donghyq/ListenWise.git
 cd lawflow
 python -m venv .venv
 .venv\Scripts\activate

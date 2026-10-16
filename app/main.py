@@ -125,7 +125,7 @@ async def restrict_non_local_requests(request: Request, call_next):
         return Response(status_code=403, content="声息的完整功能仅限本机访问。")
     return await call_next(request)
 
-RELEASE_REPOSITORY = os.getenv("LAWFLOW_RELEASE_REPOSITORY", "hey-elaine/lawflow").strip()
+RELEASE_REPOSITORY = os.getenv("LAWFLOW_RELEASE_REPOSITORY", "donghyq/ListenWise").strip()
 SCHEMA_VERSION = 2
 
 MODEL_PRESETS = {

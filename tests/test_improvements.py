@@ -56,9 +56,9 @@ class ImprovementsTest(unittest.TestCase):
             200,
             json={
                 'tag_name': 'v0.2.0',
-                'html_url': 'https://github.com/hey-elaine/lawflow/releases/tag/v0.2.0',
+                'html_url': 'https://github.com/donghyq/ListenWise/releases/tag/v0.2.0',
             },
-            request=httpx.Request('GET', 'https://api.github.com/repos/hey-elaine/lawflow/releases/latest'),
+            request=httpx.Request('GET', 'https://api.github.com/repos/donghyq/ListenWise/releases/latest'),
         )
         with patch.object(self.main.httpx, 'get', return_value=response):
             result = self.client.get('/api/app/version')

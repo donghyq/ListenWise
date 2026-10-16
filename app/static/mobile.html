@@ -301,6 +301,17 @@ a.dl { color: var(--muted); font-size: 12px; text-decoration: none; }
   }
   window.addEventListener('online', flushQueue);
   window.addEventListener('pageshow', flushQueue);
+  function updateOfflineBanner() {
+    if (navigator.onLine) {
+      if (!offlineMode) $('offline').hidden = true;
+      return;
+    }
+    $('offline').textContent = '网络已断开 · 正在播放手机缓存的内容，学习标记联网后自动同步';
+    $('offline').hidden = false;
+  }
+  window.addEventListener('offline', updateOfflineBanner);
+  window.addEventListener('online', updateOfflineBanner);
+  updateOfflineBanner();
 
   function toggleLearn(index) {
     var ch = chapters[index];
