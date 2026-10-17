@@ -857,3 +857,17 @@ audio[data-no-audio="1"] { display: none; }
 .more-menu-list .button { width: 100%; justify-content: flex-start; border: 0; background: none; }
 
 @media(max-width:850px){ .narrative-quick { grid-template-columns: 1fr; } }
+
+/* ===== 收听页：播客播放器（复用主页 listen-* 视觉） ===== */
+.studio-card { margin-top: 18px; }
+.studio-player { margin-top: 0; box-shadow: none; }
+.studio-player .listen-main b { font-size: 18px; font-weight: 600; }
+.studio-actions { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+.studio-batch-status { min-height: 1em; font-size: 12px; color: #6d6249; }
+.studio-script { margin-top: 16px; padding: 18px 4px 4px; border-top: 1px dashed #d8d0bb; max-height: 420px; overflow-y: auto; }
+.studio-script h4 { margin: 0 0 10px; color: #4a4334; }
+.listen-player .listen-bar { cursor: pointer; }
+.listen-player .listen-bar:hover i { background: var(--moss-dark); }
+.listen-chapter.missing { color: #a89f8a; }
+.listen-chapter.missing .listen-duration { color: #b5ac97; }
+@media(max-width:850px){ .studio-actions { flex-direction: column; } }
