@@ -42,7 +42,7 @@ class ImprovementsTest(unittest.TestCase):
         source = self.client.post(f"/api/projects/{project['id']}/text-sources", json={'title': '素材', 'content': '这是原始材料，需要保留事实和限制条件。企业应当按照实际情况评估。'}).json()
         document = self.client.get(f"/api/documents/{source['id']}").json()
         ids = [b['id'] for b in document['blocks'] if b['kind'] == 'paragraph']
-        content = self.client.post(f"/api/projects/{project['id']}/skill-host-contents", json={'document_id':source['id'], 'title':'测试讲稿', 'markdown':'# 讲稿\n\n这是**材料**正文。请参考[说明](https://example.com)。', 'source_block_ids':ids}).json()
+        content = self.client.post(f"/api/projects/{project['id']}/skill-host-contents", json={'document_id':source['id'], 'title':'测试讲稿', 'markdown':'好的，以下是为你整理的讲稿：\n\n# 讲稿\n\n这是**材料**正文。请参考[说明](https://example.com)。\n\n如果需要调整，请告诉我。', 'source_block_ids':ids}).json()
         return project, source, ids, content
 
     def test_provider_error_message_explains_openai_quota(self):
@@ -411,13 +411,42 @@ class ImprovementsTest(unittest.TestCase):
         body2 = '第二章的口播正文，用连贯段落讲清楚。' * 100
         # 压缩输出被 token 截断（丢掉第二章）时必须拒绝采纳。
         truncated_condensed = '# 标题\n\n## 第一章\n\n' + '压缩后只剩第一章的长正文。' * 200
-        outputs = [body1 + '结尾收束。', body2 + '结尾收束。', truncated_condensed]
+        outputs = ['欢迎收听本期节目，今天讲两件事。', body1 + '结尾收束。', body2 + '结尾收束。', truncated_condensed]
         with patch.object(self.main, 'model_chat', side_effect=outputs):
             text, _, _ = self.main.generate_narrative_markdown(outline, blocks, '读者', 'law_podcast_v4')
         self.assertNotIn('**', text)
         # 截断的整稿压缩被守卫拒绝，原稿两章都保留。
         self.assertIn('第一章展开的完整口播正文', text)
         self.assertIn('第二章的口播正文', text)
+
+    def test_podcast_profile_generates_opening_before_first_chapter(self):
+        project, source, ids, content = self.make_content()
+        outline = {'title': '标题', 'opening_angle': '', 'closing_angle': '', 'target_total_words': 600,
+                   'sections': [{'id': 's1', 'heading': '第一章', 'source_block_ids': ids, 'target_words': 300},
+                                {'id': 's2', 'heading': '第二章', 'source_block_ids': ids, 'target_words': 300}]}
+        blocks = self.main.read_blocks(source['id'])
+        body = '第一章口播正文，讲清楚关键事实。' * 30
+        model = Mock(side_effect=['欢迎收听本期节目，今天我们聊两件事。', body, '第二章口播正文，承接上文讲清楚。'])
+        with patch.object(self.main, 'model_chat', model):
+            text, sources, _ = self.main.generate_narrative_markdown(outline, blocks, '读者', 'law_podcast_v4')
+        self.assertIn('## 开场', text)
+        self.assertIn('欢迎收听本期节目', text)
+        self.assertLess(text.index('## 开场'), text.index('## 第一章'))
+        self.assertEqual(sources[0]['heading'], '开场')
+        # 开场白提示词只做引入预告，不展开事实；第一次调用是开场白，第二次才是章节
+        opening_prompt = model.call_args_list[0][0][0][-1]['content']
+        self.assertIn('开场白', opening_prompt)
+        self.assertIn('第一章；第二章', opening_prompt)
+
+    def test_podcast_single_section_skips_separate_opening(self):
+        project, source, ids, content = self.make_content()
+        outline = {'title': '标题', 'opening_angle': '', 'closing_angle': '', 'target_total_words': 500,
+                   'sections': [{'id': 's1', 'heading': '第一章', 'source_block_ids': ids, 'target_words': 300}]}
+        model = Mock(return_value='单章正文，直接讲透。')
+        with patch.object(self.main, 'model_chat', model):
+            text, _, _ = self.main.generate_narrative_markdown(outline, self.main.read_blocks(source['id']), '读者', 'law_podcast_v4')
+        self.assertNotIn('## 开场', text)
+        self.assertEqual(model.call_count, 1)
 
     def test_podcast_profile_no_length_limit_keeps_full_section(self):
         project, source, ids, content = self.make_content()
@@ -429,7 +458,7 @@ class ImprovementsTest(unittest.TestCase):
         model = Mock(side_effect=[long_section])
         with patch.object(self.main, 'model_chat', model):
             text, _, _ = self.main.generate_narrative_markdown(outline, blocks, '读者', 'law_podcast_v4')
-        # 长章完整保留，没有触发任何压缩调用。
+        # 长章完整保留，没有触发任何压缩调用（单章大纲不单独生成开场白）。
         self.assertIn(long_section[:30], text)
         self.assertIn(long_section[-30:], text)
         self.assertEqual(model.call_count, 1)
@@ -570,7 +599,7 @@ class ImprovementsTest(unittest.TestCase):
         state = self.client.get('/api/projects/' + project['id']).json()
         for task in state['tasks']:
             self.client.put('/api/tasks/' + task['id'], json={'status':'done'})
-        content = self.client.post(f"/api/projects/{project['id']}/skill-host-contents", json={'document_id':source['id'],'title':'播客稿','markdown':'# 播客稿\n\n正文。','source_block_ids':ids}).json()
+        content = self.client.post(f"/api/projects/{project['id']}/skill-host-contents", json={'document_id':source['id'],'title':'播客稿','markdown':'# 播客稿\n\n这是播客稿的正文内容，长度超过最小限制。','source_block_ids':ids}).json()
         audio = self.client.post(f"/api/projects/{project['id']}/audio-scripts", json={'narrative_content_id':content['id']}).json()
         self.assertEqual(self.client.post('/api/audio-outputs/' + audio['id'] + '/synthesize', json={}).status_code, 409)
         with patch.object(self.main, 'speech_chunk', return_value=(b'preview', 'test')):
@@ -1072,6 +1101,36 @@ class ImprovementsTest(unittest.TestCase):
         script = self.main.build_audio_script('# 标题\n\n正文第一段。', '测试讲稿', 'topic_learning', 5)
         self.assertNotIn('以上内容仅按已确认材料整理', script)
         self.assertIn('正文第一段。', script)
+
+    def test_audio_script_section_intro_skips_document_title(self):
+        title = '法律合规信息简讯（月刊）_2026年第9期_HW 2026-09-20 [Sent]'
+        script = self.main.build_audio_script('## 第一章\n\n正文第一段。', title, 'legal_podcast', 5, '巴西能源转型四项法令')
+        self.assertIn('接下来这一节，我们讲巴西能源转型四项法令。', script)
+        # 章节音频不再念整篇文档标题（下划线、日期杠、[Sent] 状态标签）
+        self.assertNotIn('简讯', script)
+        self.assertNotIn('_', script)
+        self.assertNotIn('[Sent]', script)
+
+    def test_spoken_text_converts_machine_notation_to_speech(self):
+        self.assertEqual(self.main.spoken_text('HW 2026-09-20 [Sent]'), 'HW 2026年9月20日')
+        self.assertEqual(self.main.spoken_text('2026-09 发布'), '2026年9月 发布')
+        self.assertEqual(self.main.spoken_text('文件_名'), '文件 名')
+        self.assertIn('到', self.main.spoken_text('标准 50156-2021'))
+        self.assertNotIn('·', self.main.spoken_text('甲·乙'))
+
+    def test_whole_script_intro_reads_clean_title(self):
+        script = self.main.build_audio_script('# 标题\n\n正文第一段。', '法律合规信息简讯（月刊）_2026年第9期_HW 2026-09-20 [Sent]', 'legal_podcast', 5)
+        self.assertIn('2026年9月20日', script)
+        self.assertNotIn('_', script)
+        self.assertNotIn('[Sent]', script)
+
+    def test_clean_pasted_markdown_strips_ai_chatter(self):
+        pasted = '```markdown\n好的，以下是为你整理的讲稿：\n\n# 标题\n\n正文第一段。\n\n如果需要调整，请告诉我。\n```'
+        cleaned = self.main.clean_pasted_markdown(pasted)
+        self.assertEqual(cleaned, '# 标题\n\n正文第一段。')
+        # 不误伤正文：以“当然”开头的普通句子要保留
+        kept = self.main.clean_pasted_markdown('当然，也有例外情况。\n\n正文继续。')
+        self.assertIn('当然，也有例外情况。', kept)
 
     def test_parse_ddg_results_and_unwrap(self):
         html = ('<a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fa">'

@@ -2059,6 +2059,7 @@ def speech_chunk(text: str, settings: dict) -> tuple[bytes, str]:
 def synthesize_audio(script: str, title: str, settings: dict) -> tuple[Path, str, int]:
     if not script.strip():
         raise HTTPException(400, "音频脚本不能为空。")
+    script = spoken_text(script)  # 合成前再过一遍口语清洗，兼容用户手改过的脚本
     if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
         raise HTTPException(400, "音频合成需要安装 FFmpeg（含 ffprobe）；Docker 镜像已包含。")
     audio_dir = DATA_DIR / "audio"
@@ -2091,6 +2092,52 @@ GENERATION_PROGRESS: dict[str, dict] = {}  # outline_id -> {status,total,current
 def strip_written_markers(text: str) -> str:
     """把口播稿里漏网的书面强调标记（**加粗标签** 等）转成平文，保留正文事实不动。"""
     return re.sub(r"\*\*([^*]+)\*\*", r"\1", text)
+
+
+SPOKEN_STATE_TAG_RE = re.compile(r"\s*[\[【]\s*(?:sent|draft|final|已发送|已发布|草稿)\s*[\]】]\s*", re.IGNORECASE)
+
+
+def spoken_text(text: str) -> str:
+    """把会被 TTS 念蠢的排版符号转成口语说法。
+
+    日期 2026-09-20 会被念成“二零二六杠零九杠二十”，下划线、[Sent] 这类
+    状态标签和间隔号也会被原样读出来；这里统一转成自然的口语表达。
+    """
+    value = SPOKEN_STATE_TAG_RE.sub(" ", text)
+    value = value.replace("_", " ")
+    value = re.sub(r"(\d{4})\s*[-/年]\s*(\d{1,2})\s*[-/月]\s*(\d{1,2})\s*日?", r"\1年\2月\3日", value)
+    value = re.sub(r"(\d{4})\s*[-/]\s*(\d{1,2})(?![\d/年月日-])", r"\1年\2月", value)
+    value = re.sub(r"(?<=\d)-(?=\d)", "到", value)
+    value = re.sub(r"(?<=[年月])0(?=\d)", "", value)  # 2026年09月 → 2026年9月，避免 TTS 念“零九月”
+    return value.replace("·", "，")
+
+
+def _is_ai_preamble_line(line: str) -> bool:
+    if line.startswith("#") or len(line) > 100:
+        return False
+    if re.match(r"^(?:好的|当然|明白|收到|没问题|OK)[，,！!。：:]?", line) and re.search(r"以下是|下面是|这是|为您|为你", line):
+        return True
+    return bool(re.search(r"(?:以下是|下面是)(?:为?你|我)?(?:整理|撰写|生成|改写|准备)?的?(?:这篇|一份|一期|如下)?(?:讲稿|文稿|成稿|播客|Markdown|markdown)", line))
+
+
+def _is_ai_closing_line(line: str) -> bool:
+    if line.startswith("#") or len(line) > 100:
+        return False
+    return bool(re.match(r"^(?:希望|以上内容|如果需要|如需|需要我|要不要我|请问需要|需要调整|祝你)", line))
+
+
+def clean_pasted_markdown(text: str) -> str:
+    """清理外部 AI 助手粘贴回来的成稿：去掉寒暄开头、收尾客套和整体代码围栏，只留讲稿正文。"""
+    value = text.strip().replace("\r\n", "\n")
+    fence = re.match(r"^```[a-zA-Z0-9]*\n([\s\S]*?)\n?```$", value)
+    if fence and "\n" in fence.group(1):
+        value = fence.group(1).strip()
+    lines = value.split("\n")
+    while lines and _is_ai_preamble_line(lines[0].strip()):
+        lines.pop(0)
+    while lines and _is_ai_closing_line(lines[-1].strip()):
+        lines.pop()
+    return "\n".join(lines).strip()
 
 
 def source_dossier(blocks: list[dict], max_chars_per_block: int = 2600, max_total_chars: int = SOURCE_BUDGET_CHARS) -> str:
@@ -2339,6 +2386,30 @@ def build_reviewer_guidance(project_id: str) -> str:
     return "\n\n".join(parts)
 
 
+def generate_podcast_opening(outline: dict, audience: str, reviewer_guidance: str = "") -> str:
+    """为播客风成稿生成开场白：欢迎、本期主线预告，最后把话头交给第一章。"""
+    headings = "；".join(section["heading"] for section in outline["sections"])
+    prompt = """请为一期中文播客节目写一段开场白，直接输出可朗读的口播正文。
+
+本期总标题：{title}
+面向听众：{audience}
+今天要讲的内容依次是：{headings}
+
+要求：
+1. 像主播开播：先一句话把听众带进来，再用两三句概括本期主线，自然预告今天要讲的几块内容（可以归纳成“几件事”“几个话题”，不必逐字念标题）。
+2. 只做引入和预告：不展开任何具体事实、数字、日期或法规细节，这些留给后面各节。
+3. 不新增材料外信息；不写“作为 AI”等元话语；不用小标题、列表或加粗。
+4. 长度 120–260 字，结尾用一句话把话头交给第一节（如“我们先从……说起”），但不要直接开始讲第一节的内容。"""
+    prompt = prompt.format(title=outline["title"], audience=audience, headings=headings)
+    if reviewer_guidance:
+        prompt += "\n\n用户核对意见（必须遵守）：" + reviewer_guidance
+    system_prompt = ("你是面向专业听众的深度播客主播，忠实于材料，不编造事实。"
+                     "用说的语言写作：像在对一位聪明的听众讲课，而不是在写文章。")
+    text = model_chat([{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}], temperature=0.55, max_tokens=1000)
+    text = re.sub(r"^(?:#{1,6}[ \t]+[^\n]*\r?\n+)+", "", text.strip()).strip()
+    return strip_written_markers(text)
+
+
 def generate_narrative_markdown(outline: dict, blocks: list[dict], audience: str, style_profile: str, transform_mode: str = "adapt", scenario: str = "topic_learning", target_duration: int = 10, web_research_mode: str = "discover", progress_key: str = "", reviewer_guidance: str = "") -> tuple[str, list[dict], dict]:
     profile = get_style_profiles().get(style_profile)
     if profile is None:
@@ -2355,6 +2426,12 @@ def generate_narrative_markdown(outline: dict, blocks: list[dict], audience: str
                 "来源之外的网页信息仍不得写入正文。",
     }.get(web_research_mode, "不得使用联网检索内容。")
     rendered_sections, section_sources = [], []
+    podcast_profile = style_profile == PODCAST_CHAPTER_PROFILE
+    opening_text = ""
+    if podcast_profile and len(outline["sections"]) >= 2:
+        # 播客稿先来一段开场白：欢迎、主线预告、把话头交给第一章，成稿不再突兀地直接进第一章。
+        opening_text = generate_podcast_opening(outline, audience, reviewer_guidance)
+        section_sources.append({"section_id": "opening", "heading": "开场", "source_block_ids": []})
     GENERATION_PROGRESS[progress_key] = {"status": "running", "total": len(outline["sections"]), "current": 0, "heading": ""}
     for section_index, section in enumerate(outline["sections"]):
         GENERATION_PROGRESS[progress_key] = {"status": "running", "total": len(outline["sections"]), "current": section_index + 1, "heading": section["heading"]}
@@ -2363,7 +2440,6 @@ def generate_narrative_markdown(outline: dict, blocks: list[dict], audience: str
         points = "\n".join("- " + point for point in section.get("key_points", [])) or "- 围绕本节材料展开，不添加材料外事实。"
         transform = TRANSFORM_MODES[transform_mode]
         scenario_config = CONTENT_SCENARIOS[scenario]
-        podcast_profile = style_profile == PODCAST_CHAPTER_PROFILE
         if podcast_profile:
             # 深度播客改写：深度优先于篇幅（podcast-rewriter 红线），口播稿形态与
             # generate_chapter_podcast_markdown 对齐：连贯口播段落，不用书面结构。
@@ -2375,7 +2451,8 @@ def generate_narrative_markdown(outline: dict, blocks: list[dict], audience: str
                          "加粗标签或冒号引导的列举式。书面标签必须改写成口语引导，例如："
                          "不要写“**西班牙。** 2026年7月28日，西班牙部长会议批准……”，要写“我们先看西班牙。2026年7月28日，西班牙部长会议批准了……”；"
                          "不要写“电力自由市场：自2027年11月25日起……”，要写“先说电力自由市场。从2027年11月底开始……”。"
-                         "“我们先看……”“你可能会问……”这类引导语可以自然使用；每个知识层收尾用一两句收束核心判断。")
+                         "“我们先看……”“你可能会问……”这类引导语可以自然使用；每个知识层收尾用一两句收束核心判断。"
+                         "若本节不是全文第一节，开头先用一两句话自然承接上一节的话题（全文结构见提示末尾），再进入本节，不要生硬另起炉灶。")
         else:
             length_instruction = "目标长度：{words} 字左右（硬性上限，最多超出一到两成）".format(words=section["target_words"])
             budget_rule = "5. 字数预算是硬性要求：材料过多时先删减次要细节、重复例证和过渡句，不要靠压缩句子密度塞进更多事实；写完自查一遍，明显超出预算就删到预算以内。"
@@ -2409,7 +2486,11 @@ def generate_narrative_markdown(outline: dict, blocks: list[dict], audience: str
         if reviewer_guidance:
             prompt += "\n\n用户核对意见（必须遵守）：" + reviewer_guidance
         if section_index == 0:
-            prompt += "\n请将以下开场思路写成实际口播正文，不照抄写作指令：" + outline.get("opening_angle", "")
+            if podcast_profile:
+                prompt += ("\n问候与本期预告已经放在全文最前面的“开场白”里，这一节不要重复问好或预告，"
+                           "顺着开场白的话头直接进入正题。请将以下切入思路写成实际口播正文，不照抄写作指令：" + outline.get("opening_angle", ""))
+            else:
+                prompt += "\n请将以下开场思路写成实际口播正文，不照抄写作指令：" + outline.get("opening_angle", "")
         if section_index == len(outline["sections"]) - 1:
             prompt += "\n请将以下收束思路写成实际结尾，不照抄写作指令：" + outline.get("closing_angle", "")
         system_prompt = ("你是面向专业听众的深度播客主播，忠实于材料，不编造事实。"
@@ -2431,6 +2512,8 @@ def generate_narrative_markdown(outline: dict, blocks: list[dict], audience: str
         section_sources.append({"section_id": section["id"], "heading": section["heading"], "source_block_ids": section["source_block_ids"]})
     GENERATION_PROGRESS[progress_key] = {"status": "done", "total": len(outline["sections"]), "current": len(outline["sections"]), "heading": ""}
     markdown = ("# {}\n\n".format(outline["title"]) if outline["title"] != outline["sections"][0]["heading"] else "")
+    if opening_text:
+        markdown += "## 开场\n\n{}\n\n".format(opening_text)
     markdown += "\n\n".join(rendered_sections)
     settings = get_internal_provider_settings()
     source_chars = sum(len(block.get("text", "")) for block in blocks)
@@ -3825,10 +3908,13 @@ def create_skill_host_content(project_id: str, payload: SkillHostContentRequest)
     source_ids = [block_id for block_id in payload.source_block_ids if block_id in available]
     if not source_ids:
         raise HTTPException(status_code=400, detail="宿主模型成稿未关联有效的材料块。")
+    markdown = clean_pasted_markdown(payload.markdown)
+    if len(markdown) < 20:
+        raise HTTPException(status_code=400, detail="清理 AI 回复的寒暄与代码围栏后没有留下正文；请粘贴完整的 Markdown 成稿。")
     timestamp = now_iso()
     outline_id = str(uuid.uuid4())
     content_id = str(uuid.uuid4())
-    outline = {"title": payload.title, "opening_angle": "由宿主模型按选定材料范围生成。", "closing_angle": "", "sections": [], "style_profile": payload.style_profile, "target_total_words": len(payload.markdown)}
+    outline = {"title": payload.title, "opening_angle": "由宿主模型按选定材料范围生成。", "closing_angle": "", "sections": [], "style_profile": payload.style_profile, "target_total_words": len(markdown)}
     preferences = project_preferences(project)
     model_metadata = {"provider_name": "宿主模型", "model_name": "Codex/CatPaw host model", "generated_at": timestamp, "style_profile": payload.style_profile, "mode": "host_model", **preferences}
     conn = db()
@@ -3840,7 +3926,7 @@ def create_skill_host_content(project_id: str, payload: SkillHostContentRequest)
     conn.execute(
         """INSERT INTO narrative_contents (id, outline_id, project_id, document_id, title, markdown, section_sources_json, model_json, status, review_note, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending_review', ?, ?, ?)""",
-        (content_id, outline_id, project_id, payload.document_id, payload.title, payload.markdown, json.dumps([{"section_id": "host-model", "heading": payload.title, "source_block_ids": source_ids}], ensure_ascii=False), json.dumps(model_metadata, ensure_ascii=False), payload.review_note, timestamp, timestamp),
+        (content_id, outline_id, project_id, payload.document_id, payload.title, markdown, json.dumps([{"section_id": "host-model", "heading": payload.title, "source_block_ids": source_ids}], ensure_ascii=False), json.dumps(model_metadata, ensure_ascii=False), payload.review_note, timestamp, timestamp),
     )
     conn.execute("UPDATE projects SET updated_at = ? WHERE id = ?", (timestamp, project_id))
     conn.commit()
@@ -4362,10 +4448,12 @@ def build_audio_script(markdown: str, title: str, scenario: str, target_duration
         "legal_podcast": f"欢迎收听本期法律科普：《{title}》。",
     }
     if section_heading:
-        intro = f"接下来是《{title}》中的一节：{section_heading}。"
+        # 只报章节名，不念整篇文档标题：文件名常带下划线、日期和 [Sent] 状态标签，
+        # TTS 会念成一串“杠”和“下划线”，非常生硬。
+        intro = "接下来这一节，我们讲{}。".format(section_heading)
     else:
         intro = intro_map.get(scenario, intro_map["topic_learning"])
-    return "\n\n".join([intro, *clean_lines])
+    return spoken_text("\n\n".join([intro, *clean_lines]))
 
 
 @app.post("/api/projects/{project_id}/audio-scripts", status_code=201)

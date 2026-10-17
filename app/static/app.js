@@ -1083,19 +1083,43 @@ async function copyChatGPTPrompt(event) {
   } catch (error) { showMessage(error.message, true); } finally { setBusy(button, false); }
 }
 
+function cleanPastedAiMarkdown(text) {
+  // 与后端 clean_pasted_markdown 对齐：外部 AI 回复常带寒暄开头、收尾客套和整体代码围栏。
+  let value = text.replace(/\r\n/g, '\n').trim();
+  const fence = value.match(/^```[a-zA-Z0-9]*\n([\s\S]*?)\n?```$/);
+  if (fence && fence[1].includes('\n')) value = fence[1].trim();
+  const isPreamble = line => line.length <= 100 && !line.startsWith('#') &&
+    ((/^(?:好的|当然|明白|收到|没问题|OK)[，,！!。：:]?/.test(line) && /以下是|下面是|这是|为您|为你/.test(line)) ||
+     /(?:以下是|下面是)(?:为?你|我)?(?:整理|撰写|生成|改写|准备)?的?(?:这篇|一份|一期|如下)?(?:讲稿|文稿|成稿|播客|Markdown|markdown)/.test(line));
+  const isClosing = line => line.length <= 100 && !line.startsWith('#') &&
+    /^(?:希望|以上内容|如果需要|如需|需要我|要不要我|请问需要|需要调整|祝你)/.test(line);
+  const lines = value.split('\n');
+  while (lines.length && isPreamble(lines[0].trim())) lines.shift();
+  while (lines.length && isClosing(lines[lines.length - 1].trim())) lines.pop();
+  return lines.join('\n').trim();
+}
+
 async function openChatGPTImport() {
   try {
     const handoff = await getChatGPTHandoff();
     const dialog = document.createElement('dialog');
     dialog.className = 'dialog chatgpt-import-dialog';
-    dialog.innerHTML = '<form><div class="dialog-header"><h2>导入 AI 助手成稿</h2><button type="button" class="icon-button" data-close>×</button></div><p class="form-note">仅粘贴基于刚才材料包生成的 Markdown。导入后仍会进入“待律师审核”。</p><label>讲稿标题<input id="chatgpt-import-title" value="' + escapeHtml(handoff.title) + '" /></label><label>Markdown 成稿<textarea id="chatgpt-import-markdown" required minlength="20" placeholder="粘贴 AI 助手返回的 Markdown 正文…"></textarea></label><div class="dialog-actions"><button type="button" class="button button-outline" data-close>取消</button><button type="submit" class="button button-primary">导入并审阅</button></div></form>';
+    dialog.innerHTML = '<form><div class="dialog-header"><h2>导入 AI 助手成稿</h2><button type="button" class="icon-button" data-close>×</button></div><p class="form-note">仅粘贴基于刚才材料包生成的 Markdown。导入后仍会进入“待律师审核”。</p><label>讲稿标题<input id="chatgpt-import-title" value="' + escapeHtml(handoff.title) + '" /></label><label>Markdown 成稿<textarea id="chatgpt-import-markdown" required minlength="20" placeholder="粘贴 AI 助手返回的 Markdown 正文…"></textarea></label><p class="form-note" id="chatgpt-import-hint" hidden>已自动去掉 AI 回复里的寒暄开头、收尾客套和代码围栏。</p><div class="dialog-actions"><button type="button" class="button button-outline" data-close>取消</button><button type="submit" class="button button-primary">导入并审阅</button></div></form>';
     document.body.appendChild(dialog); dialog.showModal();
     $$('[data-close]', dialog).forEach(button => button.addEventListener('click', () => dialog.close()));
+    const markdownBox = $('#chatgpt-import-markdown', dialog);
+    markdownBox.addEventListener('paste', () => setTimeout(() => {
+      const cleaned = cleanPastedAiMarkdown(markdownBox.value);
+      if (cleaned && cleaned !== markdownBox.value.trim()) {
+        markdownBox.value = cleaned;
+        $('#chatgpt-import-hint', dialog).hidden = false;
+      }
+    }, 0));
     $('form', dialog).addEventListener('submit', async event => {
       event.preventDefault(); const submit = $('button[type="submit"]', dialog);
       try {
         setBusy(submit, true, '导入中…');
-        await request('/api/projects/' + appState.selectedProject.project.id + '/skill-host-contents', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({document_id:handoff.document_id, title:$('#chatgpt-import-title', dialog).value.trim() || handoff.title, markdown:$('#chatgpt-import-markdown', dialog).value.trim(), source_block_ids:handoff.source_block_ids, style_profile:$('#narrative-profile').value || appState.profiles?.[0]?.id || '', review_note:'由外部 AI 助手生成，待律师审核。'})});
+        await request('/api/projects/' + appState.selectedProject.project.id + '/skill-host-contents', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({document_id:handoff.document_id, title:$('#chatgpt-import-title', dialog).value.trim() || handoff.title, markdown:cleanPastedAiMarkdown(markdownBox.value), source_block_ids:handoff.source_block_ids, style_profile:$('#narrative-profile').value || appState.profiles?.[0]?.id || '', review_note:'由外部 AI 助手生成，待律师审核。'})});
         dialog.close(); appState.selectedProject = await request('/api/projects/' + appState.selectedProject.project.id); renderProjectDetail(); showMessage('AI 助手成稿已导入，现可在本地审阅、生成音频脚本和导出。');
       } catch (error) { showMessage(error.message, true); } finally { setBusy(submit, false); }
     });
