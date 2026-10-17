@@ -972,6 +972,15 @@ function renderStructurePanel() {
   if (currentPlan) bindChapterControls();
   loadPlanHeadings();
   const updateWordHint = () => {
+    // 播客风画像（law_podcast_v4）在后端不设字数上限：篇幅跟随材料量，以讲透为准，
+    // 不能再按旧系数估出“约 8,000 字”这种误导性的上限。
+    const profile = $('#narrative-profile')?.value || appState.profiles?.[0]?.id;
+    if (profile === 'law_podcast_v4') {
+      const floor = Math.round((sourceChars || 0) * 0.3);
+      const floorMinutes = Math.max(1, Math.round(floor / 240));
+      $('#narrative-word-hint').textContent = '播客风不设字数上限：材料扎实就充分展开（原文每万字不少于 3,000 字），预计至少约 ' + floor.toLocaleString('zh-CN') + ' 字、收听约 ' + floorMinutes + ' 分钟起，实际以讲透为准。';
+      return;
+    }
     const ratio = $('#narrative-words-ratio')?.value || 'auto';
     // auto：跟随改写深度——扩充给到原文 1.4 倍、转译持平、提炼压缩到一半。
     const depth = $('input[name="narrative-transform"]:checked')?.value || project.transform_mode;
@@ -980,8 +989,9 @@ function renderStructurePanel() {
     const minutes = Math.max(1, Math.round(words / 240));
     $('#narrative-word-hint').textContent = '按当前设置约 ' + words.toLocaleString('zh-CN') + ' 字（原文 ' + (sourceChars || 0).toLocaleString('zh-CN') + ' 字），预计收听约 ' + minutes + ' 分钟。';
   };
-  $$('input[name="narrative-transform"]').forEach(input => input.addEventListener('change', () => { appState.outlineTransform = input.value; updateWordHint(); }));
-  $('#narrative-words-ratio')?.addEventListener('change', updateWordHint);
+$$('input[name="narrative-transform"]').forEach(input => input.addEventListener('change', () => { appState.outlineTransform = input.value; updateWordHint(); }));
+$('#narrative-words-ratio')?.addEventListener('change', updateWordHint);
+$('#narrative-profile')?.addEventListener('change', updateWordHint);
   $('#narrative-web-augment')?.addEventListener('change', event => { $('#narrative-supplemental').hidden = !event.target.checked; });
   $('#narrative-auto-research')?.addEventListener('click', autoResearchSources);
   const updateSupplementState = () => {
@@ -2371,6 +2381,8 @@ async function loadProfileOptions(selectedId) {
     ? profiles.map(profile => '<option value="' + escapeHtml(profile.id) + '">' + escapeHtml(profile.name) + (profile.builtin ? '' : '（自定义）') + '</option>').join('')
     : '<option value="" disabled selected>画像加载失败，请检查模型设置后重试</option>';
   if (selectedId) select.value = selectedId;
+  // 画像异步加载完成后再刷一次字数预估（播客风画像有专门的提示文案）
+  select.dispatchEvent(new Event('change'));
   const updateHint = () => {
     const profile = profiles.find(item => item.id === select.value);
     const hint = $('#narrative-profile-hint');
