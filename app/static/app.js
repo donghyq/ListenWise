@@ -1362,26 +1362,42 @@ async function confirmNarrativeOutline(record) {
 
 async function generateNarrative(outlineId, button) {
   let pollTimer = null;
+  const stopPoll = () => { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } };
   try {
     appState.activeTab = 'narrative';
     renderProjectDetail();
     const statusLine = () => $('#generation-status');
     const busyButton = () => $('[data-generate-from-outline]') || button;
     setBusy(busyButton(), true, '逐节写作中（较耗时）…');
-    pollTimer = setInterval(async () => {
-      try {
-        const progress = await request('/api/narrative-outlines/' + outlineId + '/progress');
-        if (progress.status === 'running' && progress.current > 0) {
+    // 逐节生成长篇可达 20 分钟以上：后台线程生成，这里轮询进度，
+    // 避免内嵌 WebView 把长时间无响应的 POST 连接掐断导致界面卡住。
+    await request('/api/narrative-outlines/' + outlineId + '/contents?background=true', { method: 'POST' });
+    await new Promise((resolve, reject) => {
+      pollTimer = setInterval(async () => {
+        try {
+          const progress = await request('/api/narrative-outlines/' + outlineId + '/progress');
           const line = statusLine();
-          if (line) line.textContent = '正在写第 ' + progress.current + ' / ' + progress.total + ' 节：' + progress.heading;
-        }
-      } catch (error) { /* 进度查询失败不影响生成 */ }
-    }, 4000);
-    await request('/api/narrative-outlines/' + outlineId + '/contents', { method: 'POST' });
+          if (progress.status === 'running' && progress.current > 0 && line) {
+            line.textContent = '正在写第 ' + progress.current + ' / ' + progress.total + ' 节：' + progress.heading;
+          } else if (progress.status === 'done') {
+            stopPoll(); resolve();
+          } else if (progress.status === 'error') {
+            stopPoll(); reject(new Error(progress.message || '生成失败，请稍后重试。'));
+          }
+        } catch (error) { /* 进度查询失败不影响生成，下一轮再试 */ }
+      }, 4000);
+    });
     appState.selectedProject = await request('/api/projects/' + appState.selectedProject.project.id);
     renderProjectDetail();
     showMessage('知识转译成稿已生成！可直接阅读排版或导出 DOCX。');
-  } catch (error) { showMessage(error.message, true); } finally { if (pollTimer) clearInterval(pollTimer); if (button?.isConnected) setBusy(button, false); }
+  } catch (error) {
+    stopPoll();
+    showMessage(error.message, true);
+    try { appState.selectedProject = await request('/api/projects/' + appState.selectedProject.project.id); renderProjectDetail(); } catch (_) { /* 保持当前视图 */ }
+  } finally {
+    stopPoll();
+    if (button?.isConnected) setBusy(button, false);
+  }
 }
 
 function markdownSections(markdown = '') {

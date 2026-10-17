@@ -12,6 +12,7 @@ import secrets
 import shutil
 import socket
 import sqlite3
+import threading
 import subprocess
 import sys
 import tempfile
@@ -4026,7 +4027,30 @@ def narrative_generation_progress(outline_id: str):
 
 
 @app.post("/api/narrative-outlines/{outline_id}/contents", status_code=201)
-def generate_narrative_content(outline_id: str):
+def generate_narrative_content(outline_id: str, background: bool = False):
+    if background:
+        # 长篇逐节生成可能超过 20 分钟，内嵌 WebView 会捾断长时间无响应的连接；
+        # 后台线程生成 + 前端轮询 progress，POST 立即返回。
+        current = GENERATION_PROGRESS.get(outline_id, {})
+        if current.get("status") == "running":
+            raise HTTPException(409, "这份大纲正在生成中，请等当前任务完成后再试。")
+        threading.Thread(target=_generate_narrative_content_job, args=(outline_id,), daemon=True).start()
+        return {"status": "generating", "outline_id": outline_id}
+    return _generate_narrative_content_job(outline_id)
+
+
+def _generate_narrative_content_job(outline_id: str):
+    try:
+        return _generate_narrative_content_impl(outline_id)
+    except HTTPException as error:
+        GENERATION_PROGRESS[outline_id] = {"status": "error", "total": 0, "current": 0, "heading": "", "message": error.detail}
+        raise
+    except Exception as error:  # 后台线程里的意外异常也要落到进度里，否则前端永远卡在 running
+        GENERATION_PROGRESS[outline_id] = {"status": "error", "total": 0, "current": 0, "heading": "", "message": "生成失败：" + str(error)}
+        raise
+
+
+def _generate_narrative_content_impl(outline_id: str):
     conn = db()
     row = conn.execute("SELECT * FROM narrative_outlines WHERE id = ?", (outline_id,)).fetchone()
     conn.close()
