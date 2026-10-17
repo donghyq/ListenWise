@@ -419,21 +419,24 @@ class ImprovementsTest(unittest.TestCase):
         self.assertIn('第一章展开的完整口播正文', text)
         self.assertIn('第二章的口播正文', text)
 
-    def test_podcast_profile_condenses_oversized_section_in_place(self):
+    def test_podcast_profile_no_length_limit_keeps_full_section(self):
         project, source, ids, content = self.make_content()
-        outline = {'title': '标题', 'opening_angle': '', 'closing_angle': '', 'target_total_words': 5000,
-                   'sections': [{'id': 's1', 'heading': '第一章', 'source_block_ids': ids, 'target_words': 500}]}
+        outline = {'title': '标题', 'opening_angle': '', 'closing_angle': '', 'target_total_words': 500,
+                   'sections': [{'id': 's1', 'heading': '第一章', 'source_block_ids': ids, 'target_words': 300}]}
         blocks = self.main.read_blocks(source['id'])
-        long_section = '先看巴西的能源法令，这是本章的关键事实。' * 100  # 1800 字 > 500*2.2
-        condensed = '先看巴西的能源法令，这是压缩后的口播正文。'
-        model = Mock(side_effect=[long_section, condensed])
+        # 材料扎实的长章（远超 target_words）：podcast-rewriter 观感下不压缩、保留完整深度。
+        long_section = '先看巴西的能源法令，这是本章的关键事实，深度展开不能删。' * 120
+        model = Mock(side_effect=[long_section])
         with patch.object(self.main, 'model_chat', model):
             text, _, _ = self.main.generate_narrative_markdown(outline, blocks, '读者', 'law_podcast_v4')
-        # 逐章压缩生效：超长章节被压缩到目标区间。
-        self.assertIn('压缩后的口播正文', text)
-        self.assertNotIn(long_section[:20] * 2, text)
-        # 整稿不超限（5000*1.8+800），只有写作+逐章压缩两次调用，无整稿压缩。
-        self.assertEqual(model.call_count, 2)
+        # 长章完整保留，没有触发任何压缩调用。
+        self.assertIn(long_section[:30], text)
+        self.assertIn(long_section[-30:], text)
+        self.assertEqual(model.call_count, 1)
+        # 提示词中不出现字数目标区间。
+        prompt = model.call_args.args[0][-1]['content']
+        self.assertNotIn('目标区间', prompt)
+        self.assertIn('不设上限', prompt)
 
     def test_audio_edit_preview_and_narrative_only_export(self):
         project, source, ids, content = self.make_content()

@@ -2366,9 +2366,10 @@ def generate_narrative_markdown(outline: dict, blocks: list[dict], audience: str
         if podcast_profile:
             # 深度播客改写：深度优先于篇幅（podcast-rewriter 红线），口播稿形态与
             # generate_chapter_podcast_markdown 对齐：连贯口播段落，不用书面结构。
-            length_instruction = "目标长度：{words} 字左右（目标区间，允许上下两成浮动）".format(words=section["target_words"])
-            budget_rule = ("5. 字数是目标区间而非硬性上限：材料扎实时可以放宽到目标的一倍半以内，但不得超过两倍；"
-                           "超出时优先删减重复例证、冗余铺垫和过渡句，不删关键事实、数字、日期与规则细节。")
+            # 字数不设上限：字数由材料密度决定，宁详尽不可遗漏知识点。
+            length_instruction = "参考篇幅：材料量对应的自然讲透长度（不设上限，以讲透为准）"
+            budget_rule = ("5. 篇幅不设上限：材料扎实就充分展开，深度优先于篇幅（原文每万字改写不少于三千字）；"
+                           "宁可详尽，不可遗漏知识点；不为了凑短而删减关键事实、数字、日期与规则细节。")
             form_rule = ("4. 这是给人听的口播稿，不是给人看的文章：通篇写成连贯的口播段落，不要小标题、项目符号、"
                          "加粗标签或冒号引导的列举式。书面标签必须改写成口语引导，例如："
                          "不要写“**西班牙。** 2026年7月28日，西班牙部长会议批准……”，要写“我们先看西班牙。2026年7月28日，西班牙部长会议批准了……”；"
@@ -2413,7 +2414,7 @@ def generate_narrative_markdown(outline: dict, blocks: list[dict], audience: str
         system_prompt = ("你是面向专业听众的深度播客主播，忠实于材料，不编造事实。"
                           "用说的语言写作：像在对一位聪明的听众讲课，而不是在写文章。") if podcast_profile \
             else "你是严谨的法律知识内容作者，忠实于材料，不编造事实。"
-        section_text = model_chat([{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}], temperature=0.55, max_tokens=max(1200, min(8000, section["target_words"] * 2)))
+        section_text = model_chat([{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}], temperature=0.55, max_tokens=max(1200, min(8000, section["target_words"] * 2 if not podcast_profile else 8000)))
         # 模型经常自己重复本节标题；统一去掉正文开头的一至多行标题，避免与下方拼接的小标题重复。
         section_text = re.sub(r"^(?:#{1,6}[ \t]+[^\n]*\r?\n+)+", "", section_text.strip()).strip()
         # per-section 生成撞 token 上限时会在句中截断；退回到最后一个完整句，避免半句话入库。
@@ -2423,22 +2424,8 @@ def generate_narrative_markdown(outline: dict, blocks: list[dict], audience: str
                 section_text = section_text[:cut + 1]
         if podcast_profile:
             # 口播稿不应残留书面强调标记；漏网的加粗标签统一转为平文。
+            # 字数不限制（podcast-rewriter 观感：深度优先、自由生长），不再做逐章压缩。
             section_text = strip_written_markers(section_text)
-            # 深度播客深度优先，但超出目标两倍多时逐章压缩；单章输入小，
-            # 不会撞 token 上限，比整稿压缩可靠（整稿压缩偶发截断会被守卫拒绝）。
-            section_target = int(section.get("target_words") or 0)
-            if section_target >= 200 and len(section_text) > section_target * 2.2:
-                try:
-                    compressed = model_chat([
-                        {"role": "system", "content": "你是严格的播客稿编辑。只做删减和压缩，不改写事实。"},
-                        {"role": "user", "content": "下面的单章口播稿超出目标篇幅，目前约 {current} 字，目标是约 {target} 字。请压缩到约 {target} 字：输出长度是硬约束，不得超过目标的1.5倍。逐段做减法而不是保留原句微调；保持口播段落形态（不加粗标签、不用冒号列举、不用小标题），保留全部关键事实、数字、日期、限制条件和结论；删掉重复表述、冗余铺垫和次要细节。不得新增内容，不得改变立场或结论。只输出压缩后的口播正文，不要标题。\n\n{body}".format(current=len(section_text), target=section_target, body=section_text)},
-                    ], temperature=0.3, max_tokens=min(8000, max(1200, section_target * 2)))
-                    compressed = strip_written_markers(compressed.strip())
-                    if (compressed and compressed.endswith(("。", "！", "？", "”", "）"))
-                            and "##" not in compressed and len(compressed) < len(section_text)):
-                        section_text = compressed
-                except HTTPException:
-                    pass  # 压缩服务不可用时保留原章，只影响篇幅不影响完整性
         rendered_sections.append("## {}\n\n{}".format(section["heading"], section_text))
         section_sources.append({"section_id": section["id"], "heading": section["heading"], "source_block_ids": section["source_block_ids"]})
     GENERATION_PROGRESS[progress_key] = {"status": "done", "total": len(outline["sections"]), "current": len(outline["sections"]), "heading": ""}
@@ -2457,7 +2444,8 @@ def generate_narrative_markdown(outline: dict, blocks: list[dict], audience: str
     target_total = int(outline.get("target_total_words", 0) or 0)
     podcast_total = style_profile == PODCAST_CHAPTER_PROFILE
     overrun_condensed = False
-    if target_total >= 600:
+    # 播客分支不压缩：深度优先于篇幅（podcast-rewriter 红线），篇幅由材料密度决定。
+    if target_total >= 600 and not podcast_total:
         overrun_limit = round(target_total * (1.8 if podcast_total else 1.4)) + (800 if podcast_total else 300)
         for _pass in range(2):
             if output_chars <= overrun_limit:
