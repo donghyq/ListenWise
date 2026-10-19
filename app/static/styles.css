@@ -1017,3 +1017,9 @@ button:focus-visible, a:focus-visible, [role="button"]:focus-visible, summary:fo
   }
 }
 .listen-chapters { -webkit-overflow-scrolling: touch; }
+
+/* 章节列表统一跟随页面滚动，避免不同窗口宽度下出现内嵌滚动陷阱 */
+.listen-chapters {
+  max-height: none;
+  overflow-y: visible;
+}
