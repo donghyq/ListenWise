@@ -1008,3 +1008,12 @@ button:focus-visible, a:focus-visible, [role="button"]:focus-visible, summary:fo
 .audio-naturalize-note { color: #5f6b64; }
 .shelf-sort .select-box { width: 120px; flex: 0 0 120px; }
 .shelf-sort .select-box-trigger { min-height: 34px; padding: 5px 8px; font-size: 12.5px; }
+
+/* 窄窗口/移动端：章节列表不再做内嵌滚动，避免手势被困在列表里 */
+@media (max-width: 1020px) {
+  .listen-player .listen-chapters {
+    max-height: none;
+    overflow-y: visible;
+  }
+}
+.listen-chapters { -webkit-overflow-scrolling: touch; }
