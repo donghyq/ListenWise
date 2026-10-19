@@ -1023,3 +1023,9 @@ button:focus-visible, a:focus-visible, [role="button"]:focus-visible, summary:fo
   max-height: none;
   overflow-y: visible;
 }
+
+/* 章节目录默认显示前 5 章，展开后随页面滚动，避免内嵌滚动区 */
+.studio-player.has-more-chapters:not(.chapters-expanded) .listen-chapters li:nth-child(n+6) {
+  display: none;
+}
+.studio-player.chapters-expanded { align-items: start; }

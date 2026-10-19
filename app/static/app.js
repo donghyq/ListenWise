@@ -1951,6 +1951,10 @@ function initStudioPlayer(content) {
     const hidden = panel.classList.toggle('hidden');
     $('#studio-script-toggle').textContent = hidden ? '查看本章讲稿' : '收起讲稿';
   });
+  $('#studio-expand-chapters')?.addEventListener('click', event => {
+    const expanded = root.classList.toggle('chapters-expanded');
+    event.currentTarget.textContent = expanded ? '收起章节' : '展开全部 ' + studioState.tracks.length + ' 章';
+  });
 }
 
 async function generateAllChapterAudio(content, button) {
@@ -2010,13 +2014,14 @@ function renderStudioHero(content) {
   const ready = chapters.filter(chapter => chapterAudio(content, chapter)?.audio_available).length;
   const rateButtons = [1, 1.25, 1.5, 2].map(rate => '<button type="button" class="listen-rate-btn" data-rate="' + rate + '">' + rate + '×</button>').join('');
   const audioEnabled = appState.selectedProject.project.audio_enabled;
-  return '<section class="panel-card studio-card"><div class="listen-player studio-player" id="studio-player">'
+  return '<section class="panel-card studio-card"><div class="listen-player studio-player' + (chapters.length > 5 ? ' has-more-chapters' : '') + '" id="studio-player">'
     + '<img class="listen-cover" src="/img/cover-listen.jpg" alt="" />'
     + '<div class="listen-main"><b id="studio-title">选择一章开始收听</b><span class="listen-meta" id="studio-meta">共 ' + chapters.length + ' 章 · ' + ready + ' 章音频就绪 · ' + escapeHtml(content.title) + '</span>'
     + '<div class="listen-progress"><div class="listen-bar" id="studio-bar-zone" title="点击跳转进度"><i id="studio-bar"></i></div><span class="listen-time"><span id="studio-current">0:00</span> / <span id="studio-total">0:00</span></span></div>'
     + '<div class="listen-controls"><button type="button" class="listen-ctrl" id="studio-prev" aria-label="上一章">⏮</button><button type="button" class="listen-toggle" id="studio-toggle" aria-label="播放 / 暂停">▶</button><button type="button" class="listen-ctrl" id="studio-next" aria-label="下一章">⏭</button></div>'
     + '<div class="listen-rate" id="studio-rate">' + rateButtons + '</div>'
     + '<div class="studio-actions"><button type="button" class="button button-outline button-small" id="studio-script-toggle">查看本章讲稿</button>'
+    + (chapters.length > 5 ? '<button type="button" class="button button-quiet button-small" id="studio-expand-chapters">展开全部 ' + chapters.length + ' 章</button>' : '')
     + (audioEnabled ? '<button type="button" class="button button-primary button-small" id="studio-generate-all">' + (content.status === 'confirmed' ? '一键生成全部章节音频' : '一键生成全部章节脚本') + '</button>' : '')
     + (audioEnabled ? '<button type="button" class="button button-danger button-small" id="studio-cancel-batch" hidden>停止</button>' : '')
     + '<span class="studio-batch-status" id="studio-batch-status" role="status"></span></div></div>'
