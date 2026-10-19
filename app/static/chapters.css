@@ -76,3 +76,15 @@ body.in-project #collection-bar { display: none; }
   .chapter-player audio { flex-basis: 100%; }
   .chapter-workbench-header { padding: 18px; }
 }
+
+/* 章节阅读面收拢：播放器所在页不重复展示章节目录侧栏 */
+.chapter-layout.no-sidebar { grid-template-columns: minmax(0, 1fr); }
+
+/* 项目阅读区：对比度与最小字号 */
+.chapter-heading > span { color: #6f6248; }
+.chapter-heading > small { color: #5f6b64; }
+.chapter-audio-title b { color: #2f3a2e; }
+.chapter-audio-title .tag { font-size: 12px; }
+.chapter-nav-item small { color: #6f6248; font-size: 12px; }
+.chapter-player label { font-size: 11.5px; color: #5f6b64; }
+.chapter-audio-hint { color: #5f6b64; }

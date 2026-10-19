@@ -6,6 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <meta name="apple-mobile-web-app-title" content="声息" />
+<link rel="icon" type="image/png" href="/m/icon-180.png" />
 <link rel="apple-touch-icon" href="/m/icon-180.png" />
 <title>声息 · 手机收听</title>
 <style>
@@ -205,6 +206,7 @@ a.dl { color: var(--muted); font-size: 12px; text-decoration: none; }
     chapters.forEach(function (ch, index) {
       var pos = Number(localStorage.getItem(posKey(ch.id)) || 0);
       var pct = ch.duration_seconds ? Math.min(100, Math.round(pos / ch.duration_seconds * 100)) : 0;
+      var learnable = !!ch.section_id;
       var row = document.createElement('div');
       row.className = 'chapter' + (index === current ? ' playing' : '');
       row.dataset.index = index;
@@ -212,15 +214,16 @@ a.dl { color: var(--muted); font-size: 12px; text-decoration: none; }
         '<div class="info"><div class="title"></div><div class="sub"><span>' + fmt(ch.duration_seconds) + '</span>' +
         (ch.chapter ? '' : '<span class="chip">整篇</span>') +
         (cachedIds[ch.id] ? '<span class="chip cached">已缓存</span>' : '') +
-        '<span class="chip' + (ch.learned ? ' done' : '') + '" data-learn>' + (ch.learned ? '已学' : '未学') + '</span></div>' +
+        (learnable ? '<span class="chip' + (ch.learned ? ' done' : '') + '" data-learn>' + (ch.learned ? '已学' : '未学') + '</span>' : '') + '</div>' +
         '<div class="bar"><i style="width:' + pct + '%"></i></div></div>' +
-        '<button class="learn-btn' + (ch.learned ? ' done' : '') + '" data-learn-btn>' + (ch.learned ? '✓ 已学' : '标记已学') + '</button>';
+        (learnable ? '<button class="learn-btn' + (ch.learned ? ' done' : '') + '" data-learn-btn>' + (ch.learned ? '✓ 已学' : '标记已学') + '</button>' : '');
       row.querySelector('.title').textContent = ch.title;
       row.addEventListener('click', function (event) {
         if (event.target.hasAttribute('data-learn-btn')) return;
         play(index);
       });
-      row.querySelector('[data-learn-btn]').addEventListener('click', function () { toggleLearn(index); });
+      var learnBtn = row.querySelector('[data-learn-btn]');
+      if (learnBtn) learnBtn.addEventListener('click', function () { toggleLearn(index); });
       list.appendChild(row);
     });
   }
@@ -274,6 +277,7 @@ a.dl { color: var(--muted); font-size: 12px; text-decoration: none; }
     var ch = chapters[index];
     ch.learned = value;
     renderList();
+    updateBookMeta();
     if (current >= 0) refreshRow(current);
   }
 
@@ -315,6 +319,7 @@ a.dl { color: var(--muted); font-size: 12px; text-decoration: none; }
 
   function toggleLearn(index) {
     var ch = chapters[index];
+    if (!ch || !ch.section_id) return;
     var target = !ch.learned;
     fetch(api + '/progress', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ audio_id: ch.id, completed: target }) })
       .then(function (res) { return res.json(); })
@@ -334,14 +339,20 @@ a.dl { color: var(--muted); font-size: 12px; text-decoration: none; }
     play(next);
   }
 
+  function updateBookMeta() {
+    var learnable = chapters.filter(function (ch) { return !!ch.section_id; });
+    var parts = [];
+    if (learnable.length) parts.push('已学 ' + learnable.filter(function (ch) { return ch.learned; }).length + ' / ' + learnable.length + ' 章');
+    else parts.push('共 ' + chapters.length + ' 段音频');
+    if (learnable.length && chapters.some(function (ch) { return !ch.section_id; })) parts.push('含整篇音频');
+    if (offlineMode) parts.push('离线');
+    $('book-meta').textContent = parts.join(' · ');
+  }
+
   function applyData(data) {
     $('book-title').textContent = data.title;
-    var meta = [];
-    if (data.total) meta.push('已学 ' + data.learned_count + ' / ' + data.total + ' 章');
-    meta.push(data.whole_book.length ? '含整篇音频' : '共 ' + data.total + ' 章');
-    if (offlineMode) meta.push('离线');
-    $('book-meta').textContent = meta.join(' · ');
     chapters = data.chapters.concat(data.whole_book);
+    updateBookMeta();
     loadCachedFlags().then(function () {
       renderList();
       if (chapters.length) {

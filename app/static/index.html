@@ -4,8 +4,10 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>声息｜把没有时间读完的东西，带到路上</title>
-  <link rel="stylesheet" href="/styles.css?v=20261015-2" />
-  <link rel="stylesheet" href="/chapters.css?v=20261015-2" />
+  <link rel="icon" type="image/png" href="/icon-180.png" />
+  <link rel="apple-touch-icon" href="/icon-180.png" />
+  <link rel="stylesheet" href="/styles.css?v=20261019-3" />
+  <link rel="stylesheet" href="/chapters.css?v=20261019-3" />
 </head>
 <body>
   <header class="nav shell">
@@ -83,16 +85,29 @@
     <section id="workspace" class="workspace shell">
       <div class="workspace-top"><div><button type="button" class="back-home" id="back-home">← 回主页</button><p class="eyebrow">我的书架</p><h2>把存下来的东西，再遇见一次。</h2><p>新文章先核对原文；已经整理过的，从上次停下的地方继续。</p></div><div class="workspace-actions"><button class="button button-outline" id="open-daily-brief">每日速听订阅</button><button class="button button-outline" id="new-project">自定义整理任务</button></div></div>
       <section class="quick-import" id="quick-import" aria-labelledby="quick-import-title">
-        <div class="quick-import-copy"><p class="eyebrow">新的一篇</p><h3 id="quick-import-title">粘贴文章链接，先看抓取结果。</h3><p>支持公众号和公开网页；读取失败时，可以改用文件或粘贴正文。</p></div>
+        <div class="quick-import-copy"><p class="eyebrow">新的一篇</p><h3 id="quick-import-title">粘贴文章链接，先看抓取结果。</h3><p>支持公众号和公开网页；读取失败时，可以改用文件或粘贴正文。</p><button type="button" class="button button-outline button-small quick-paste-open" id="quick-paste-open">粘贴正文</button></div>
         <form id="quick-link-form">
           <div class="quick-link-entry"><input id="quick-link-input" type="url" required aria-label="公众号或网页链接" placeholder="粘贴公众号或网页链接" /><button type="submit" class="button button-primary" id="quick-link-submit">预览文章</button></div>
           <p class="quick-link-status" id="quick-link-status" role="status" aria-live="polite"></p>
-          <div class="quick-link-preview hidden" id="quick-link-preview"><span class="quick-preview-label">抓取预览</span><h4 id="quick-preview-title"></h4><p id="quick-preview-excerpt"></p><small id="quick-preview-length"></small><details class="quick-preview-details" id="quick-preview-details"><summary><span class="quick-preview-open">展开全文检查</span><span class="quick-preview-close">收起全文</span></summary><div class="quick-preview-full" tabindex="0" aria-label="抓取到的完整正文"><pre id="quick-preview-full"></pre><div class="quick-preview-ending"><b>正文结尾</b><p id="quick-preview-ending"></p></div></div></details><fieldset><p class="quick-options-hint">确认正文完整后，选择收听方式</p><label><input type="radio" name="quick_scenario" value="daily_brief" checked /> 播客风改写 · AI 分章成稿，逐章收听<small>先按深度改写，再合成音频</small></label><label><input type="radio" name="quick_scenario" value="direct_audio" /> 原文朗读 · 不改写，直接生成音频<small>完整保留原文写法</small></label><div class="quick-depth" id="quick-depth"><span class="quick-depth-title">改写深度</span><label><input type="radio" name="quick_transform" value="adapt" checked /> 忠实转译<small>重组讲清，不丢信息</small></label><label><input type="radio" name="quick_transform" value="condense" /> 提炼<small>压缩成要点速听</small></label><label><input type="radio" name="quick_transform" value="enrich" /> 扩充<small>补背景，讲得更透</small></label></div></fieldset><button type="button" class="button button-primary" id="quick-link-create">确认正文并继续 →</button></div>
+          <div class="quick-link-preview hidden" id="quick-link-preview"><div class="quick-preview-head"><span class="quick-preview-label">抓取预览</span><button type="button" class="button button-quiet button-small" id="quick-preview-reset">重新输入</button></div><h4 id="quick-preview-title"></h4><p id="quick-preview-excerpt"></p><small id="quick-preview-length"></small><details class="quick-preview-details" id="quick-preview-details"><summary><span class="quick-preview-open">展开全文检查</span><span class="quick-preview-close">收起全文</span></summary><div class="quick-preview-full" tabindex="0" aria-label="抓取到的完整正文"><pre id="quick-preview-full"></pre><div class="quick-preview-ending"><b>正文结尾</b><p id="quick-preview-ending"></p></div></div></details><fieldset><p class="quick-options-hint">确认正文完整后，选择收听方式</p><label><input type="radio" name="quick_scenario" value="daily_brief" checked /> 播客风改写 · AI 分章成稿，逐章收听<small>先按深度改写，再合成音频</small></label><label><input type="radio" name="quick_scenario" value="direct_audio" /> 原文朗读 · 不改写，直接生成音频<small>完整保留原文写法</small></label><div class="quick-depth" id="quick-depth"><span class="quick-depth-title">改写深度</span><label><input type="radio" name="quick_transform" value="adapt" checked /> 忠实转译<small>重组讲清，不丢信息</small></label><label><input type="radio" name="quick_transform" value="condense" /> 提炼<small>压缩成要点速听</small></label><label><input type="radio" name="quick_transform" value="enrich" /> 扩充<small>补背景，讲得更透</small></label></div></fieldset><button type="button" class="button button-primary" id="quick-link-create">确认正文并继续 →</button></div>
         </form>
         <label class="quick-upload">或上传文件 <span>PDF · DOCX · TXT · Markdown</span><input id="quick-upload-input" type="file" accept=".docx,.txt,.md,.pdf" /></label>
       </section>
-      <div id="collection-bar" class="collection-bar"></div>
-      <div id="workspace-message" class="message hidden"></div>
+      <div class="shelf-toolbar">
+        <div id="collection-bar" class="collection-bar"></div>
+        <div class="shelf-tools">
+          <input id="shelf-search" type="search" class="shelf-search" aria-label="搜索项目" placeholder="搜索书名、备注或收藏夹" autocomplete="off" />
+          <label class="shelf-sort"><span>排序</span>
+            <select id="shelf-sort" aria-label="排序方式">
+              <option value="updated">最近更新</option>
+              <option value="name">名称</option>
+              <option value="duration">时长</option>
+              <option value="progress">学习进度</option>
+            </select>
+          </label>
+        </div>
+      </div>
+      <div id="workspace-message" class="message hidden" role="status" aria-live="polite"></div>
       <div id="daily-brief-list" class="daily-brief-list"></div>
       <div id="project-list" class="project-grid"><div class="empty-state"><b>还没有项目</b><p>从一篇想听的文章开始。</p></div></div>
       <div id="project-detail" class="project-detail hidden"></div>
@@ -138,6 +153,22 @@
     <div class="dialog-actions"><button type="button" class="button button-outline" data-close-dialog="project-dialog">取消</button><button type="submit" class="button button-primary">创建内容任务</button></div>
   </form></dialog>
 
+  <dialog id="paste-dialog" class="dialog"><form id="paste-form">
+    <div class="dialog-header"><h2>粘贴正文</h2><button type="button" aria-label="关闭" class="icon-button" data-close-dialog="paste-dialog">×</button></div>
+    <p class="form-note">适合公众号、需要登录的网页，或本地复制来的笔记。保存后会清除多余空行，并按段落拆成素材。</p>
+    <label>标题（可选）<input name="title" maxlength="120" placeholder="例如：这篇文章讲什么" /></label>
+    <label>来源链接（可选）<input name="source_url" type="url" placeholder="https://..." /></label>
+    <label>正文<textarea name="content" rows="10" required placeholder="把正文粘贴在这里…"></textarea></label>
+    <div class="dialog-actions"><button type="button" class="button button-outline" data-close-dialog="paste-dialog">取消</button><button type="submit" class="button button-primary">加入书架</button></div>
+  </form></dialog>
+
+  <dialog id="rename-dialog" class="dialog"><form id="rename-form">
+    <div class="dialog-header"><h2>重命名项目</h2><button type="button" aria-label="关闭" class="icon-button" data-close-dialog="rename-dialog">×</button></div>
+    <p class="form-note" id="rename-target"></p>
+    <label>项目名称<input name="name" required maxlength="120" autocomplete="off" /></label>
+    <div class="dialog-actions"><button type="button" class="button button-outline" data-close-dialog="rename-dialog">取消</button><button type="submit" class="button button-primary">保存名称</button></div>
+  </form></dialog>
+
   <dialog id="collection-dialog" class="dialog"><form id="collection-form">
     <div class="dialog-header"><h2>归到哪个收藏夹</h2><button type="button" aria-label="关闭" class="icon-button" data-close-dialog="collection-dialog">×</button></div>
     <p class="form-note" id="collection-dialog-target"></p>
@@ -146,11 +177,11 @@
     <div class="dialog-actions"><button type="button" class="button button-danger button-small" id="collection-remove" hidden>移出收藏夹</button><button type="button" class="button button-outline" data-close-dialog="collection-dialog">取消</button><button type="submit" class="button button-primary">保存</button></div>
   </form></dialog>
 
-  <dialog id="settings-dialog" class="dialog"><form id="settings-form"><div class="dialog-header"><h2>模型与音频设置</h2><button type="button" aria-label="关闭" class="icon-button" data-close-dialog="settings-dialog">×</button></div><p class="form-note">默认只需选择服务商并粘贴 API Key。密钥仅保存在本机；选择“保存并测试”后会发送一条极短测试请求。</p><fieldset><legend>文本模型（必填）</legend><label>服务商<select name="provider_preset" id="provider-preset"><option value="openai">OpenAI（推荐）</option><option value="deepseek">DeepSeek</option><option value="custom">企业网关 / 其他兼容接口</option></select></label><label>API Key<input type="password" name="api_key" placeholder="粘贴 API Key，仅保存于本机" /></label><label class="check-label"><input type="checkbox" name="allow_source_upload" /> 我确认可将选定素材发送给该模型服务</label><div class="setting-test-row"><button type="button" class="button button-outline button-small" id="test-provider">测试连接</button><span id="provider-test-result" class="field-hint"></span></div></fieldset><details class="advanced-settings"><summary>高级设置：自定义网关、音色与播客转写</summary><fieldset><legend>兼容接口</legend><label>服务商名称<input name="provider_name" placeholder="仅自定义接口需要填写" /></label><label>Base URL<input name="base_url" placeholder="https://api.example.com/v1" /></label><label>模型名称<input name="model_name" placeholder="例如：gpt-4.1-mini" /></label></fieldset><fieldset><legend>语音合成（可选）</legend><label>接口类型<select name="tts_provider"><option value="macos_say">macOS 本地语音（Mac 推荐）</option><option value="windows_sapi">Windows 本地语音（Win 推荐）</option><option value="edge_tts">Edge TTS 实验性在线免费语音</option><option value="compatible">兼容 /audio/speech</option><option value="minimax">MiniMax 原生</option></select></label><label>默认音色<input name="tts_voice" placeholder="mac 推荐 Tingting；Win 推荐 Microsoft Huihui Desktop；Edge 推荐 zh-CN-XiaoxiaoNeural" /></label><label>语速<input name="tts_speed" type="number" min="0.5" max="2" step="0.05" value="1"/></label><p class="field-hint">macOS / Windows 本地语音完全免费、无需联网和密钥，适合学习与校对（都需要安装 FFmpeg）。Edge TTS 无需 Key、音质较自然，但属于实验性在线能力，不承诺稳定性、可用地区或商业用途；正式对外内容请使用有授权的大陆云服务。</p><label>TTS Base URL<input name="tts_base_url" placeholder="仅云端 TTS 需要填写" /></label><label>TTS 模型<input name="tts_model" placeholder="仅云端 TTS 需要填写" /></label><label>TTS API Key<input type="password" name="tts_api_key" placeholder="仅云端 TTS 需要填写" /></label><label>语气指令<textarea name="tts_instructions" maxlength="1000" placeholder="仅支持 instructions 的云端模型需要填写"></textarea></label></fieldset><fieldset><legend>播客语音转写（可选）</legend><label>转写 Base URL<input name="asr_base_url" /></label><label>转写模型<input name="asr_model" /></label><label>转写 API Key<input type="password" name="asr_api_key"/></label></fieldset><fieldset><legend>成果导出</legend><label>导出目录<input name="output_directory" placeholder="~/Desktop/ai_law" /></label></fieldset></details><div class="dialog-actions"><button type="button" class="button button-outline" data-close-dialog="settings-dialog">取消</button><button type="submit" class="button button-primary">保存设置</button></div></form></dialog>
+  <dialog id="settings-dialog" class="dialog"><form id="settings-form"><div class="dialog-header"><h2>模型与音频设置</h2><button type="button" aria-label="关闭" class="icon-button" data-close-dialog="settings-dialog">×</button></div><p class="form-note">默认只需选择服务商并粘贴 API Key。密钥仅保存在本机；选择“保存并测试”后会发送一条极短测试请求。</p><fieldset><legend>文本模型（必填）</legend><label>服务商<select name="provider_preset" id="provider-preset"><option value="openai">OpenAI（推荐）</option><option value="deepseek">DeepSeek</option><option value="custom">企业网关 / 其他兼容接口</option></select></label><label>API Key<input type="password" name="api_key" placeholder="粘贴 API Key，仅保存于本机" /></label><label class="check-label"><input type="checkbox" name="allow_source_upload" /> 我确认可将选定素材发送给该模型服务</label><div class="setting-test-row"><button type="button" class="button button-outline button-small" id="test-provider">测试连接</button><span id="provider-test-result" class="field-hint" role="status" aria-live="polite"></span></div></fieldset><details class="advanced-settings"><summary>高级设置：自定义网关、音色与播客转写</summary><fieldset><legend>兼容接口</legend><label>服务商名称<input name="provider_name" placeholder="仅自定义接口需要填写" /></label><label>Base URL<input name="base_url" placeholder="https://api.example.com/v1" /></label><label>模型名称<input name="model_name" placeholder="例如：gpt-4.1-mini" /></label></fieldset><fieldset><legend>语音合成（可选）</legend><label>接口类型<select name="tts_provider"><option value="macos_say">macOS 本地语音（Mac 推荐）</option><option value="windows_sapi">Windows 本地语音（Win 推荐）</option><option value="edge_tts">Edge TTS 实验性在线免费语音</option><option value="compatible">兼容 /audio/speech</option><option value="minimax">MiniMax 原生</option></select></label><label>默认音色<input name="tts_voice" placeholder="mac 推荐 Tingting；Win 推荐 Microsoft Huihui Desktop；Edge 推荐 zh-CN-XiaoxiaoNeural" /></label><label>语速<input name="tts_speed" type="number" min="0.5" max="2" step="0.05" value="1"/></label><p class="field-hint">macOS / Windows 本地语音完全免费、无需联网和密钥，适合学习与校对（都需要安装 FFmpeg）。Edge TTS 无需 Key、音质较自然，但属于实验性在线能力，不承诺稳定性、可用地区或商业用途；正式对外内容请使用有授权的大陆云服务。</p><label>TTS Base URL<input name="tts_base_url" placeholder="仅云端 TTS 需要填写" /></label><label>TTS 模型<input name="tts_model" placeholder="仅云端 TTS 需要填写" /></label><label>TTS API Key<input type="password" name="tts_api_key" placeholder="仅云端 TTS 需要填写" /></label><label>语气指令<textarea name="tts_instructions" maxlength="1000" placeholder="仅支持 instructions 的云端模型需要填写"></textarea></label></fieldset><fieldset><legend>播客语音转写（可选）</legend><label>转写 Base URL<input name="asr_base_url" /></label><label>转写模型<input name="asr_model" /></label><label>转写 API Key<input type="password" name="asr_api_key"/></label></fieldset><fieldset><legend>成果导出</legend><label>导出目录<input name="output_directory" placeholder="~/Desktop/ai_law" /></label></fieldset></details><div class="dialog-actions"><button type="button" class="button button-outline" data-close-dialog="settings-dialog">取消</button><button type="submit" class="button button-primary">保存设置</button></div></form></dialog>
 
   <dialog id="daily-brief-dialog" class="dialog"><form id="daily-brief-form"><div class="dialog-header"><h2>每日速听</h2><button type="button" aria-label="关闭" class="icon-button" data-close-dialog="daily-brief-dialog">×</button></div><p class="form-note">订阅公开 RSS 或 Atom 源。系统每天只收集新文章并建立待审速听任务；不会自动发布，也不会自动生成最终 MP3。</p><label>订阅名称<input required name="name" maxlength="120" placeholder="例如：数据合规资讯" /></label><label>RSS / Atom 地址<input required name="feed_url" type="url" placeholder="https://example.com/feed.xml" /></label><div class="plan-settings"><div class="field"><label>每日运行时间<input name="daily_time" type="time" value="08:00" /></label></div><div class="field"><label>每次最多收集<input name="max_items" type="number" min="1" max="10" value="3" /> 篇</label></div></div><label class="check-label"><input type="checkbox" name="auto_generate" /> 允许自动生成待审速听稿与音频脚本（仅在模型已配置且允许发送素材时）</label><div class="dialog-actions"><button type="button" class="button button-outline" data-close-dialog="daily-brief-dialog">取消</button><button type="submit" class="button button-primary">保存订阅</button></div></form></dialog>
 
-  <script src="/chapters.js?v=20261015-2"></script>
-  <script src="/app.js?v=20261015-2"></script>
+  <script src="/chapters.js?v=20261019-3"></script>
+  <script src="/app.js?v=20261019-3"></script>
 </body>
 </html>

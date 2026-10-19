@@ -96,6 +96,35 @@ class MobileShareTest(unittest.TestCase):
         self.assertTrue(data["chapters"][0]["learned"])
         self.assertEqual(data["learned_count"], 1)
 
+    def test_invalid_page_is_readable_html_not_json(self) -> None:
+        response = self.client.get("/m/not-a-real-token")
+        self.assertEqual(response.status_code, 404)
+        self.assertIn("text/html", response.headers["content-type"])
+        self.assertIn("链接已失效", response.text)
+        self.assertIn('name="viewport"', response.text)
+
+    def test_audio_duration_and_progress_exclude_whole_book(self) -> None:
+        project_id, _ = _create_project_with_audio(self.client, self.main)
+        whole_path = Path(self.main.DATA_DIR) / f"mobile-test-whole-{project_id[:8]}.mp3"
+        whole_path.write_bytes(b"ID3" + b"\x00" * 256)
+        with self.main.db() as conn:
+            conn.execute("PRAGMA foreign_keys = OFF")
+            conn.execute(
+                "INSERT INTO audio_outputs (id, project_id, narrative_content_id, title, script, provider, voice, audio_path, duration_seconds, status, created_at, updated_at) "
+                "VALUES (?, ?, NULL, ?, ?, 'edge', '', ?, 120, 'ready', datetime('now'), datetime('now'))",
+                ("whole-" + project_id[:8], project_id, "手机收听测试讲稿", "整篇正文。", str(whole_path)),
+            )
+        detail = self.client.get(f"/api/projects/{project_id}").json()
+        self.assertEqual(detail["audio_duration_seconds"], 120)
+        listed = next(item for item in self.client.get("/api/projects").json() if item["id"] == project_id)
+        self.assertEqual(listed["audio_duration_seconds"], 120)
+        share = self.client.post(f"/api/projects/{project_id}/mobile-share").json()
+        book = self.client.get(share["path"] + "/data").json()
+        self.assertEqual(book["total"], 1)
+        self.assertEqual(book["audio_count"], 2)
+        self.assertEqual(len(book["whole_book"]), 1)
+        self.assertFalse(book["whole_book"][0]["chapter"])
+
     def test_audio_stream(self) -> None:
         project_id, audio_id = _create_project_with_audio(self.client, self.main)
         share = self.client.post(f"/api/projects/{project_id}/mobile-share").json()

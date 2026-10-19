@@ -29,7 +29,7 @@ from xml.etree import ElementTree as ET
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi import Request
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from starlette.background import BackgroundTask
 from fastapi.staticfiles import StaticFiles
 from docx import Document
@@ -2794,6 +2794,44 @@ def app_version():
     return latest_release_status()
 
 
+def project_audio_durations(conn: sqlite3.Connection, project_id: str | None = None) -> dict[str, int]:
+    """每个项目实际可听的时长（秒）。
+
+    项目里可能同时存在整篇音频和分章音频，直接相加会重复计时。
+    同一份讲稿优先取「分章音频之和」与「整篇音频」中的较大者；
+    多个讲稿版本之间也取较大者；直达原文音频单独成组。
+    """
+    where = " WHERE project_id = ?" if project_id else ""
+    params: tuple = (project_id,) if project_id else ()
+    content_titles = {
+        row["id"]: row["title"]
+        for row in conn.execute(f"SELECT id, title FROM narrative_contents{where}", params)
+    }
+    groups: dict[tuple[str, str], dict[str, int]] = {}
+    for row in conn.execute(
+        f"SELECT project_id, narrative_content_id, title, duration_seconds, status, audio_path FROM audio_outputs{where}",
+        params,
+    ):
+        if row["status"] != "ready" or not row["audio_path"] or not Path(row["audio_path"]).is_file():
+            continue
+        content_key = row["narrative_content_id"] or "__direct__"
+        group = groups.setdefault((row["project_id"], content_key), {"chapters": 0, "whole": 0, "chapter_count": 0})
+        duration = max(0, int(row["duration_seconds"] or 0))
+        content_title = content_titles.get(row["narrative_content_id"], "")
+        if content_title and (row["title"] or "").startswith(content_title + " · "):
+            group["chapters"] += duration
+            group["chapter_count"] += 1
+        else:
+            group["whole"] = max(group["whole"], duration)
+    durations: dict[str, int] = {}
+    for (pid, _content_key), group in groups.items():
+        # 分章音频通常比整篇长（每章都有开场/收束），但只生成了一部分章节时
+        # 整篇音频才是完整时长；取较大者，避免低估或重复相加。
+        best = max(group["chapters"], group["whole"])
+        durations[pid] = max(durations.get(pid, 0), best)
+    return durations
+
+
 @app.get("/api/projects")
 def list_projects():
     conn = db()
@@ -2826,10 +2864,12 @@ def list_projects():
         agg = progress.setdefault(row["project_id"], {"done": 0, "total": 0})
         agg["total"] += total
         agg["done"] += min(done, total)
+    durations = project_audio_durations(conn)
     conn.close()
     for item in rows:
         item["production_stage"] = stages.get(item["id"], {})
         item["learning_progress"] = progress.get(item["id"], {"done": 0, "total": 0})
+        item["audio_duration_seconds"] = durations.get(item["id"], 0)
     return rows
 
 
@@ -3060,6 +3100,7 @@ def get_project(project_id: str):
                 )
                 conn.commit()
                 tasks = [dict(row) for row in conn.execute("SELECT * FROM tasks WHERE project_id = ? ORDER BY CASE risk_level WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, created_at DESC", (project_id,)).fetchall()]
+    durations = project_audio_durations(conn, project_id)
     conn.close()
     for document in docs:
         document["structure"] = parse_json(document.pop("structure_json"), {})
@@ -3096,7 +3137,7 @@ def get_project(project_id: str):
         audio["audio_available"] = audio["status"] == "ready" and bool(audio.get("audio_path")) and Path(audio["audio_path"]).is_file()
     for task in tasks:
         task["evidence_block_ids"] = parse_json(task["evidence_block_ids"], [])
-    return {"project": project, "documents": docs, "plans": plans, "contents": contents, "narrative_outlines": narrative_outlines, "narrative_contents": narrative_contents, "audio_outputs": audio_outputs, "tasks": tasks}
+    return {"project": project, "documents": docs, "plans": plans, "contents": contents, "narrative_outlines": narrative_outlines, "narrative_contents": narrative_contents, "audio_outputs": audio_outputs, "tasks": tasks, "audio_duration_seconds": durations.get(project_id, 0)}
 
 
 def fetch_article(url: str) -> tuple[str, str]:
@@ -3141,7 +3182,7 @@ def read_link_article(url: str) -> tuple[str, str, str]:
     address = valid_public_url(url)
     title, text = fetch_article(address)
     if len(clean_text(text)) < 200:
-        raise HTTPException(status_code=422, detail="这个链接没抓到足够的正文。可能是图片排版、需要登录，或链接已失效。请打开文章复制正文，再用「粘贴文本」导入。")
+        raise HTTPException(status_code=422, detail="这个链接没抓到足够的正文。可能是图片排版、需要登录，或链接已失效。可以改用文件导入，或创建任务后在「素材」页粘贴正文。")
     return address, title.strip() or "网页文章", text
 
 
@@ -5147,7 +5188,8 @@ MOBILE_SHARE_TTL = timedelta(days=7)
 def local_lan_ip() -> str:
     """探测本机局域网 IP（UDP connect 不会真正发包）。
 
-    优先返回家用/办公网段（192.168 > 10.x > 172.16-31），跳过 VPN 虚拟网段（如 198.18/15）。
+    优先返回家用/办公网段（192.168 > 10.x > 172.16-31），跳过 VPN 虚拟网段（如 198.18/15）；
+    没有 RFC1918 地址时，接受默认路由所在网卡的非回环地址（如企业网的 11.x）。
     """
     probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     candidates: list[str] = []
@@ -5181,10 +5223,14 @@ def local_lan_ip() -> str:
             address = ipaddress.ip_address(ip)
         except ValueError:
             return 99
-        if not address.is_private or address.is_loopback:
+        if address.is_loopback or address.is_link_local or address.is_unspecified:
             return 99
         if address in ipaddress.ip_network("198.18.0.0/15"):  # VPN/基准测试虚拟网段
             return 98
+        if not address.is_private:
+            # 企业/校园网常用 11.x、100.64/10 等非 RFC1918 地址；它们仍可能
+            # 是手机能访问的局域网地址，不能直接回退到 127.0.0.1。
+            return 10
         octets = [int(part) for part in str(address).split(".")]
         if octets[0] == 192 and octets[1] == 168:
             return 0
@@ -5203,6 +5249,49 @@ def valid_mobile_share(conn: sqlite3.Connection, token: str):
     if row is None or row["revoked_at"] is not None or row["expires_at"] <= now_iso():
         return None
     return row
+
+
+def mobile_share_error_page(message: str = "链接不存在或已失效。") -> HTMLResponse:
+    """失效/吊销的手机链接返回可读页面，而不是裸 JSON。"""
+    page = """<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="color-scheme" content="light" />
+<title>链接已失效 · 声息</title>
+<link rel="icon" type="image/png" href="/m/icon-180.png" />
+<style>
+  :root { --ink:#14251f; --muted:#6b766f; --accent:#1d5b49; --line:#e6e1d5; --bg:#f7f5ef; --card:#fffdf8; }
+  * { box-sizing:border-box; }
+  body { margin:0; min-height:100vh; display:grid; place-items:center; padding:28px; background:var(--bg); color:var(--ink); font:15px/1.7 -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans SC", sans-serif; }
+  main { width:min(440px,100%); padding:34px 28px 28px; border:1px solid var(--line); border-radius:20px; background:var(--card); box-shadow:0 18px 50px rgba(30,44,38,.08); text-align:center; }
+  .brand { margin-bottom:22px; color:var(--accent); font-size:11px; font-weight:700; letter-spacing:.18em; }
+  .icon { width:58px; height:58px; margin:0 auto 18px; display:grid; place-items:center; border-radius:50%; background:#eef3ea; color:var(--accent); }
+  h1 { margin:0 0 10px; font-size:21px; line-height:1.4; }
+  p { margin:0; color:var(--muted); }
+  .hint { margin-top:20px; padding-top:16px; border-top:1px solid var(--line); font-size:13px; line-height:1.8; }
+  .hint b { color:var(--ink); font-weight:600; }
+  footer { margin-top:24px; color:#9b9c92; font-size:11px; letter-spacing:.12em; }
+</style>
+</head>
+<body>
+<main>
+  <div class="brand">声息 · SHENGXI</div>
+  <div class="icon" aria-hidden="true">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+      <path d="M10 13a5 5 0 0 0 7.1 0l2.1-2.1a5 5 0 0 0-7.1-7.1L11 5"/>
+      <path d="M14 11a5 5 0 0 0-7.1 0l-2.1 2.1a5 5 0 0 0 7.1 7.1L13 19"/>
+    </svg>
+  </div>
+  <h1>链接已失效</h1>
+  <p>__MESSAGE__</p>
+  <p class="hint"><b>请让分享者在电脑端重新生成链接。</b><br/>链接默认 7 天有效；重新生成会作废旧链接。声息退出或电脑睡眠时，手机页也会暂时不可用。</p>
+  <footer>有时只是戴上耳机，然后出发。</footer>
+</main>
+</body>
+</html>"""
+    return HTMLResponse(page.replace("__MESSAGE__", escape(message)), status_code=404)
 
 
 def mobile_chapter_suffix(content_title: str, audio_title: str) -> str:
@@ -5302,13 +5391,17 @@ def build_mobile_book(conn: sqlite3.Connection, project_id: str) -> dict:
     chapters = [chapter_payload(a) for a in audios if a["narrative_content_id"]]
     content_order = {row["id"]: index for index, row in enumerate(contents)}
     chapters.sort(key=lambda c: (content_order.get(c["content_id"], 0), int(c["section_id"].split("-")[-1]) if c["section_id"] else 0))
-    learned = sum(1 for c in chapters if c["learned"])
+    # 只有能映射到具体章节的音频才参与「已学」统计；整篇音频和无法映射的
+    # 旧音频不进入分母，否则用户永远到不了 100%。
+    learnable = [chapter for chapter in chapters if chapter["section_id"]]
+    learned = sum(1 for chapter in learnable if chapter["learned"])
     return {
         "title": project["name"],
         "whole_book": whole_book,
         "chapters": chapters,
         "learned_count": learned,
-        "total": len(chapters),
+        "total": len(learnable),
+        "audio_count": len(chapters) + len(whole_book),
     }
 
 
@@ -5379,7 +5472,7 @@ def mobile_listen_page(token: str):
     share = valid_mobile_share(conn, token)
     conn.close()
     if share is None:
-        raise HTTPException(404, "链接不存在或已失效。")
+        return mobile_share_error_page("链接不存在或已失效。")
     return FileResponse(STATIC_DIR / "mobile.html", media_type="text/html")
 
 
