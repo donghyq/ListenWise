@@ -321,6 +321,11 @@ class ProviderSettings(BaseModel):
     asr_api_key: str = ""
     # 仅本机模式：关闭后手机页 /m/* 只允许本机回环访问。
     lan_share_enabled: bool = True
+    # 音频后期处理：响度归一 + 首尾淡入淡出，减少多章音量差异和首尾突兀感。
+    audio_post_enabled: bool = True
+    # 片头/片尾文案：非空时整篇直读音频和合并有声书首尾插入对应语音；逐章独立音频不加。
+    audio_intro_text: str = ""
+    audio_outro_text: str = ""
 
 
 class ProviderConnectionTest(BaseModel):
@@ -2218,6 +2223,157 @@ def _synthesize_audio_impl(script: str, title: str, settings: dict) -> tuple[Pat
     return output_path, model, duration
 
 
+AUDIO_POST_FADE_SECONDS = 0.25  # 首尾淡入淡出时长
+BOOKEND_SILENCE_SECONDS = 0.4  # 片头/片尾与正文之间的静音间隔
+
+
+def _probe_audio_duration_seconds(path: Path) -> float:
+    """用 ffprobe 读取音频时长（秒）；探测失败抛出异常，由调用方决定兜底方式。"""
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+        check=True, capture_output=True, text=True, timeout=30,
+    )
+    return float(probe.stdout.strip().splitlines()[0])
+
+
+def post_process_audio(path: Path, settings: dict) -> Path:
+    """对合成后的音频做响度归一（loudnorm）和首尾淡入淡出。
+
+    处理成功才覆盖原文件；关闭开关或处理失败时保留原文件，
+    失败原因追加到诊断错误列表，不影响音频正常标记 ready。
+    """
+    if not settings.get("audio_post_enabled", True):
+        return path
+    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+        record_recent_error("音频后期处理跳过：未找到 FFmpeg（含 ffprobe）。")
+        return path
+    try:
+        duration = _probe_audio_duration_seconds(path)
+        fade_out_start = max(0.0, duration - AUDIO_POST_FADE_SECONDS)
+        filter_chain = (
+            "loudnorm=I=-16:TP=-1.5:LRA=11,"
+            f"afade=t=in:st=0:d={AUDIO_POST_FADE_SECONDS},"
+            f"afade=t=out:st={fade_out_start:.3f}:d={AUDIO_POST_FADE_SECONDS}"
+        )
+        temp_path = path.with_name(path.stem + "-postprocessed.mp3")
+        subprocess.run(
+            ["ffmpeg", "-v", "error", "-y", "-i", str(path), "-af", filter_chain,
+             "-ar", "44100", "-codec:a", "libmp3lame", "-b:a", "128k", str(temp_path)],
+            check=True, capture_output=True, timeout=600,
+        )
+        if not temp_path.is_file() or temp_path.stat().st_size == 0:
+            raise RuntimeError("ffmpeg 未生成后期处理文件")
+        _probe_audio_duration_seconds(temp_path)  # 确认产物可解析后再覆盖
+        temp_path.replace(path)
+    except (subprocess.SubprocessError, OSError, ValueError, IndexError, RuntimeError) as error:
+        temp_path = path.with_name(path.stem + "-postprocessed.mp3")
+        temp_path.unlink(missing_ok=True)
+        record_recent_error("音频后期处理失败，保留原始音频：" + str(error))
+    return path
+
+
+def render_bookend_audio(text: str, position: str, settings: dict) -> Path:
+    """把片头/片尾文案合成为 MP3，并在朝向正文的一侧补 0.4 秒静音。
+
+    position 为 intro 时静音接在音频末尾，outro 时静音放在音频开头，
+    这样合并时书挡文件与正文之间自然留出间隔。
+    """
+    if position not in ("intro", "outro"):
+        raise ValueError("position 只支持 intro 或 outro")
+    audio, _ = speech_chunk(spoken_text(text), settings)
+    audio_dir = DATA_DIR / "audio"
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    output_path = audio_dir / (uuid.uuid4().hex + ".mp3")
+    with tempfile.TemporaryDirectory(prefix="lawflow-bookend-") as temp:
+        speech_path = Path(temp) / "speech.mp3"
+        speech_path.write_bytes(audio)
+        if position == "intro":
+            filter_chain = f"apad=pad_dur={BOOKEND_SILENCE_SECONDS}"
+        else:
+            filter_chain = f"adelay={int(round(BOOKEND_SILENCE_SECONDS * 1000))}:all=1"
+        subprocess.run(
+            ["ffmpeg", "-v", "error", "-y", "-i", str(speech_path), "-af", filter_chain,
+             "-codec:a", "libmp3lame", "-b:a", "128k", str(output_path)],
+            check=True, capture_output=True, timeout=120,
+        )
+    if not output_path.is_file() or output_path.stat().st_size == 0:
+        raise HTTPException(502, "片头/片尾音频生成失败。")
+    return output_path
+
+
+def with_audio_bookends(chapters: list[tuple[str, Path]], settings: dict) -> tuple[list[tuple[str, Path]], list[Path]]:
+    """给合并章节列表首尾插入片头/片尾音频。
+
+    返回（插入后的列表, 需要调用方在合并后清理的临时文件）。未配置文案时
+    原样返回；书挡合成失败时降级为不加书挡继续导出，并记录诊断错误。
+    """
+    intro_text = str(settings.get("audio_intro_text") or "").strip()
+    outro_text = str(settings.get("audio_outro_text") or "").strip()
+    if not intro_text and not outro_text:
+        return list(chapters), []
+    merged = list(chapters)
+    temp_files: list[Path] = []
+    try:
+        if intro_text:
+            intro_path = render_bookend_audio(intro_text, "intro", settings)
+            temp_files.append(intro_path)
+            merged.insert(0, ("片头", intro_path))
+        if outro_text:
+            outro_path = render_bookend_audio(outro_text, "outro", settings)
+            temp_files.append(outro_path)
+            merged.append(("片尾", outro_path))
+    except (subprocess.SubprocessError, OSError, ValueError, HTTPException) as error:
+        for temp_file in temp_files:
+            temp_file.unlink(missing_ok=True)
+        record_recent_error("片头/片尾合成失败，本次合并不加片头片尾：" + str(error))
+        return list(chapters), []
+    return merged, temp_files
+
+
+def attach_audio_bookends(main_path: Path, settings: dict) -> Path:
+    """给整篇直读音频（无章节输出）拼接片头/片尾。
+
+    未配置文案时原样返回；拼接失败时降级为无片头片尾的原始音频，
+    并记录诊断错误。成功时删除中间文件，只保留拼接结果。
+    """
+    intro_text = str(settings.get("audio_intro_text") or "").strip()
+    outro_text = str(settings.get("audio_outro_text") or "").strip()
+    if not intro_text and not outro_text:
+        return main_path
+    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+        record_recent_error("片头/片尾拼接跳过：未找到 FFmpeg（含 ffprobe）。")
+        return main_path
+    entries: list[Path] = []
+    try:
+        if intro_text:
+            entries.append(render_bookend_audio(intro_text, "intro", settings))
+        entries.append(main_path)
+        if outro_text:
+            entries.append(render_bookend_audio(outro_text, "outro", settings))
+        combined_path = DATA_DIR / "audio" / (uuid.uuid4().hex + ".mp3")
+        with tempfile.TemporaryDirectory(prefix="lawflow-bookend-") as temp:
+            manifest = Path(temp) / "parts.txt"
+            manifest.write_text("".join(f"file '{entry.resolve()}'\n" for entry in entries), encoding="utf-8")
+            subprocess.run(
+                ["ffmpeg", "-v", "error", "-f", "concat", "-safe", "0", "-i", str(manifest),
+                 "-c:a", "libmp3lame", "-b:a", "128k", str(combined_path)],
+                check=True, capture_output=True, timeout=600,
+            )
+        if not combined_path.is_file() or combined_path.stat().st_size == 0:
+            raise RuntimeError("拼接未生成文件")
+    except (subprocess.SubprocessError, OSError, ValueError, HTTPException) as error:
+        for entry in entries:
+            if entry != main_path:
+                entry.unlink(missing_ok=True)
+        record_recent_error("片头/片尾拼接失败，保留无片头片尾的原始音频：" + str(error))
+        return main_path
+    for entry in entries:
+        if entry != main_path:
+            entry.unlink(missing_ok=True)
+    main_path.unlink(missing_ok=True)
+    return combined_path
+
+
 SOURCE_BUDGET_CHARS = 60000  # DeepSeek 128K 上下文下安全的一次性素材预算（支持播客改写 1万→3千 的压缩比）
 GENERATION_PROGRESS: dict[str, dict] = {}  # outline_id -> {status,total,current,heading}，供前端轮询逐节写作进度
 
@@ -2380,6 +2536,90 @@ def normalize_narrative_outline(raw: dict, request: NarrativeOutlineRequest, blo
     }
 
 
+LONG_DOC_CHUNK_CHARS = 8000  # 超长材料分段抽取时每块的字数上限
+LONG_DOC_MAX_CHUNKS = 24  # 分块数量上限；24 × 8000 ≈ 19 万字
+
+
+def extract_chunk_key_points(chunk_text: str) -> list[str] | None:
+    """调模型抽取单个分块的关键事实；输出非法时返回 None，由调用方跳过该块。"""
+    prompt = (
+        "以下是一篇长文材料中的一个分段。请只提取影响理解的关键事实：规则变化、日期、数字、结论。\n"
+        '只输出一个 JSON 对象，格式为 {"points": ["..."]}；每条不超过 80 字，最多 15 条；'
+        '不要编造分段之外的内容；若没有值得保留的关键事实，返回 {"points": []}。\n\n'
+        "分段内容：\n" + chunk_text
+    )
+    try:
+        raw = model_chat(
+            [
+                {"role": "system", "content": "你只输出可解析的 JSON，不输出任何解释。"},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.1,
+            max_tokens=2000,
+        )
+        data = parse_model_json(raw)
+    except HTTPException:
+        return None
+    if not isinstance(data, dict):
+        return None
+    raw_points = data.get("points")
+    if not isinstance(raw_points, list):
+        return None
+    points: list[str] = []
+    for item in raw_points:
+        text = clean_text(str(item))[:80]
+        if text:
+            points.append(text)
+        if len(points) >= 15:
+            break
+    return points
+
+
+def build_long_doc_digest(blocks: list[dict], source_chars: int) -> tuple[str, dict]:
+    """超长材料的 map-reduce 摘要：按顺序分块抽取要点，拼成进入大纲提示词的摘要 dossier。
+
+    分组规则：按 sequence 顺序把段落块聚成每块不超过约 8000 字的分组，单段
+    超长时在段内切分；分块超过 24 个说明材料超过约 19 万字，要求分批导入。
+    """
+    paragraphs = [block for block in blocks if block["kind"] != "heading" and clean_text(block["text"])]
+    ordered = sorted(paragraphs, key=lambda block: (block.get("document_id", ""), block.get("sequence_no", 0)))
+    chunks: list[list[tuple[str, str]]] = []
+    current: list[tuple[str, str]] = []
+    used = 0
+    for block in ordered:
+        text = clean_text(block["text"])
+        pieces = [text[start:start + LONG_DOC_CHUNK_CHARS] for start in range(0, len(text), LONG_DOC_CHUNK_CHARS)]
+        for piece in pieces:
+            if current and used + len(piece) > LONG_DOC_CHUNK_CHARS:
+                chunks.append(current)
+                current, used = [], 0
+            current.append((block["id"], piece))
+            used += len(piece)
+    if current:
+        chunks.append(current)
+    if len(chunks) > LONG_DOC_MAX_CHUNKS:
+        raise HTTPException(400, "材料超过约 19 万字，请分批导入")
+    digest_parts = ["以下为超长材料的分段要点摘要，大纲必须覆盖全部编号分块的关键点。"]
+    extracted_any = False
+    for index, chunk in enumerate(chunks, start=1):
+        chunk_text = "\n\n".join(piece for _, piece in chunk)
+        points = extract_chunk_key_points(chunk_text)
+        if points is None:
+            continue  # 该块要点抽取输出非法时跳过，不阻断整体大纲生成
+        extracted_any = extracted_any or bool(points)
+        block_ids = list(dict.fromkeys(block_id for block_id, _ in chunk))
+        lines = ["[分块{}｜材料块 ID：{}]".format(index, "、".join(block_ids))]
+        if points:
+            lines.extend("- " + point for point in points)
+        else:
+            lines.append("- （本段没有需要单独保留的关键事实）")
+        digest_parts.append("\n".join(lines))
+    if not extracted_any:
+        raise HTTPException(502, "超长材料的要点抽取全部失败，请检查模型设置后重试，或分批导入材料。")
+    digest = "\n\n".join(digest_parts)
+    return digest, {"chunks": len(chunks), "source_chars": source_chars}
+
+
 def create_narrative_outline(request: NarrativeOutlineRequest, blocks: list[dict], previous_outline: dict | None = None) -> dict:
     profile = get_style_profiles().get(request.style_profile)
     if profile is None:
@@ -2389,7 +2629,13 @@ def create_narrative_outline(request: NarrativeOutlineRequest, blocks: list[dict
         request.style_profile, request.transform_mode,
         sum(len(block.get("text", "")) for block in blocks),
     )
-    dossier = source_dossier(blocks)
+    # 所选正文超过一次性素材预算时，改走 map-reduce：分段抽取要点后以摘要进入大纲提示词。
+    source_chars = sum(len(clean_text(block["text"])) for block in blocks if block["kind"] != "heading")
+    long_doc_digest = None
+    if source_chars > SOURCE_BUDGET_CHARS:
+        dossier, long_doc_digest = build_long_doc_digest(blocks, source_chars)
+    else:
+        dossier = source_dossier(blocks)
     transform = TRANSFORM_MODES[request.transform_mode]
     verification = VERIFICATION_MODES[request.verification_mode]
     scenario = CONTENT_SCENARIOS[request.scenario]
@@ -2433,7 +2679,10 @@ def create_narrative_outline(request: NarrativeOutlineRequest, blocks: list[dict
     # 大纲 JSON 需逐字复制材料块 ID（UUID 较长），6 节 × 多 ID + key_points 很容易超过 3600 token，
     # 截断会直接变成非法 JSON；上限放宽到 8000 保证完整性。
     raw = model_chat([{"role": "system", "content": "你严格遵守材料边界，并只返回可解析 JSON。"}, {"role": "user", "content": prompt}], temperature=0.25, max_tokens=8000)
-    return normalize_narrative_outline(parse_model_json(raw), request, blocks)
+    outline = normalize_narrative_outline(parse_model_json(raw), request, blocks)
+    if long_doc_digest is not None:
+        outline["long_doc_digest"] = long_doc_digest  # 供前端展示超长材料的分段情况
+    return outline
 
 
 def extract_outline_points(paragraphs: list[str], limit: int = 4) -> list[str]:
@@ -5137,7 +5386,13 @@ def export_project_audiobook(project_id: str):
     safe_title = re.sub(r"[\\/:*?\"<>|]", "_", project["name"]).strip() or "shengxi-audiobook"
     output_path = output_root / f"{safe_title}.m4b"
     try:
-        merge_audiobook(chapter_files, pick_audiobook_cover(project_id), project["name"], output_path)
+        settings = get_internal_provider_settings()
+        merged_chapters, bookend_files = with_audio_bookends(chapter_files, settings)
+        try:
+            merge_audiobook(merged_chapters, pick_audiobook_cover(project_id), project["name"], output_path)
+        finally:
+            for bookend in bookend_files:
+                bookend.unlink(missing_ok=True)
     except (subprocess.SubprocessError, OSError) as error:
         raise HTTPException(502, f"有声书合并失败：{error}") from error
     return {"audiobook_path": str(output_path), "chapters": len(chapter_files), "title": project["name"]}
@@ -5195,6 +5450,7 @@ def export_direct_audiobook(project_id: str):
         raise HTTPException(400, "这份素材没有可朗读的正文。")
     settings = get_internal_provider_settings()
     chapter_files: list[tuple[str, Path]] = []
+    bookend_files: list[Path] = []
     try:
         for index, (heading, text) in enumerate(chapters, start=1):
             audio_path, _, _ = synthesize_audio(text, f"{output['title']}·{index:02d}·{heading}", settings)
@@ -5202,7 +5458,12 @@ def export_direct_audiobook(project_id: str):
         output_root = get_configured_export_directory()
         safe_title = re.sub(r"[\\/:*?\"<>|]", "_", project["name"]).strip() or "shengxi-audiobook"
         output_path = output_root / f"{safe_title}（原文朗读）.m4b"
-        merge_audiobook(chapter_files, pick_audiobook_cover(project_id), project["name"], output_path)
+        merged_chapters, bookend_files = with_audio_bookends(chapter_files, settings)
+        try:
+            merge_audiobook(merged_chapters, pick_audiobook_cover(project_id), project["name"], output_path)
+        finally:
+            for bookend in bookend_files:
+                bookend.unlink(missing_ok=True)
     finally:
         for _, audio_path in chapter_files:
             audio_path.unlink(missing_ok=True)
@@ -5285,13 +5546,23 @@ def synthesize_audio_output(audio_id: str, payload: AudioSynthesisRequest):
 def finish_audio_output(output: sqlite3.Row, settings: dict):
     audio_id = output["id"]
     output_path, provider, duration_seconds = synthesize_audio(output["script"], output["title"], settings)
-    timestamp = now_iso()
     conn = db()
     latest = conn.execute("SELECT script, status FROM audio_outputs WHERE id=?", (audio_id,)).fetchone()
+    conn.close()
     if latest is None or latest["script"] != output["script"] or latest["status"] == "source_changed":
-        conn.close()
         output_path.unlink(missing_ok=True)
         raise HTTPException(409, "合成期间脚本已修改，请按最新脚本重新生成。")
+    # 整篇直读音频（非章节路径）先接片头/片尾；逐章独立音频保持干净。
+    if not output["narrative_content_id"]:
+        output_path = attach_audio_bookends(output_path, settings)
+    # 响度归一 + 首尾淡入淡出必须发生在标记 ready 之前。
+    output_path = post_process_audio(output_path, settings)
+    try:
+        duration_seconds = max(1, round(_probe_audio_duration_seconds(output_path)))  # 后期处理可能微调时长
+    except (subprocess.SubprocessError, OSError, ValueError, IndexError):
+        pass  # 探测失败时沿用合成阶段返回的时长
+    timestamp = now_iso()
+    conn = db()
     conn.execute("UPDATE audio_outputs SET provider = ?, voice = ?, audio_path = ?, duration_seconds = ?, status = 'ready', updated_at = ? WHERE id = ?", (provider, settings.get("tts_voice", ""), str(output_path), duration_seconds, timestamp, audio_id))
     conn.commit()
     conn.close()
@@ -5457,6 +5728,10 @@ def get_provider():
         value["asr_api_key"] = "已配置（本地不回显）"
     if "lan_share_enabled" not in value:
         value["lan_share_enabled"] = True  # 旧版设置缺该字段时按默认开启处理
+    if "audio_post_enabled" not in value:
+        value["audio_post_enabled"] = True  # 旧版设置缺该字段时按默认开启处理
+    for audio_field in ("audio_intro_text", "audio_outro_text"):
+        value.setdefault(audio_field, "")
     if not value.get("provider_preset"):
         value["provider_preset"] = next((name for name, preset in MODEL_PRESETS.items() if name != "custom" and value.get("base_url") == preset["base_url"]), "openai")
     return value
