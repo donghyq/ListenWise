@@ -31,7 +31,7 @@ class AiChapterProposalTest(unittest.TestCase):
             {"heading_id": "h4", "question": "总体影响如何评估？"},
         ]}, ensure_ascii=False)
         with patch.object(app_main, "model_chat", return_value=model_output):
-            picked, _ = app_main.ai_chapter_proposal(make_blocks())
+            picked, _, _ = app_main.ai_chapter_proposal(make_blocks())
         self.assertEqual([hid for hid, _ in picked], ["h1", "h3", "h4"])
         self.assertEqual(picked[0][1], "人工智能治理的背景是什么？")
 
@@ -41,7 +41,7 @@ class AiChapterProposalTest(unittest.TestCase):
             {"heading_id": "h4", "question": "q2"},
         ]}, ensure_ascii=False) + "\n```"
         with patch.object(app_main, "model_chat", return_value=model_output):
-            picked, _ = app_main.ai_chapter_proposal(make_blocks())
+            picked, _, _ = app_main.ai_chapter_proposal(make_blocks())
         self.assertEqual(len(picked), 2)
 
     def test_model_titles_are_returned_and_cleaned(self):
@@ -51,7 +51,7 @@ class AiChapterProposalTest(unittest.TestCase):
             {"heading_id": "h4", "title": "", "question": "q3"},
         ]}, ensure_ascii=False)
         with patch.object(app_main, "model_chat", return_value=model_output):
-            picked, titles = app_main.ai_chapter_proposal(make_blocks())
+            picked, titles, _ = app_main.ai_chapter_proposal(make_blocks())
         self.assertEqual([hid for hid, _ in picked], ["h1", "h3", "h4"])
         self.assertEqual(titles, {"h1": "治理背景", "h3": "数据出境合规要点"})
 
@@ -64,7 +64,7 @@ class AiChapterProposalTest(unittest.TestCase):
         # 模拟 max_tokens 截断：最后一个章节对象被切在半截
         truncated = full[: full.rfind("}") - 40]
         with patch.object(app_main, "model_chat", return_value=truncated):
-            picked, _ = app_main.ai_chapter_proposal(make_blocks())
+            picked, _, _ = app_main.ai_chapter_proposal(make_blocks())
         self.assertEqual([hid for hid, _ in picked], ["h1", "h3"])
         self.assertEqual(picked[1][1], "数据出境有哪些触发条件？")
 
@@ -75,7 +75,7 @@ class AiChapterProposalTest(unittest.TestCase):
             {"heading_id": "h4", "question": "另一章"},
         ]}, ensure_ascii=False)
         with patch.object(app_main, "model_chat", return_value=model_output):
-            picked, _ = app_main.ai_chapter_proposal(make_blocks())
+            picked, _, _ = app_main.ai_chapter_proposal(make_blocks())
         self.assertEqual([hid for hid, _ in picked], ["h1", "h4"])
 
     def test_unknown_ids_and_out_of_order_are_normalized(self):
@@ -85,7 +85,7 @@ class AiChapterProposalTest(unittest.TestCase):
             {"heading_id": "h1", "question": "q"},
         ]}, ensure_ascii=False)
         with patch.object(app_main, "model_chat", return_value=model_output):
-            picked, _ = app_main.ai_chapter_proposal(make_blocks())
+            picked, _, _ = app_main.ai_chapter_proposal(make_blocks())
         self.assertEqual([hid for hid, _ in picked], ["h1", "h4"])
 
     def test_invalid_payload_raises_value_error(self):
@@ -97,7 +97,7 @@ class AiChapterProposalTest(unittest.TestCase):
         # 短材料只有一个主题时，模型只返回一章也是合法划分，不应回退到规则切分。
         model_output = json.dumps({"chapters": [{"heading_id": "h1", "question": "q"}]}, ensure_ascii=False)
         with patch.object(app_main, "model_chat", return_value=model_output):
-            picked, _ = app_main.ai_chapter_proposal(make_blocks())
+            picked, _, _ = app_main.ai_chapter_proposal(make_blocks())
         self.assertEqual([hid for hid, _ in picked], ["h1"])
 
     def test_missing_question_falls_back_to_template(self):
@@ -106,7 +106,7 @@ class AiChapterProposalTest(unittest.TestCase):
             {"heading_id": "h3", "question": None},
         ]}, ensure_ascii=False)
         with patch.object(app_main, "model_chat", return_value=model_output):
-            picked, _ = app_main.ai_chapter_proposal(make_blocks())
+            picked, _, _ = app_main.ai_chapter_proposal(make_blocks())
         self.assertTrue(all(question.strip() for _, question in picked))
 
 

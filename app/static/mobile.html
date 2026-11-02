@@ -59,6 +59,12 @@ main { padding: 12px 14px; display: grid; gap: 10px; }
 .error { text-align: center; padding: 64px 24px; color: var(--muted); }
 .error b { display: block; font-size: 18px; color: var(--ink); margin-bottom: 8px; }
 a.dl { color: var(--muted); font-size: 12px; text-decoration: none; }
+header .library-link { display: inline-block; margin-top: 10px; color: var(--accent); font-size: 14px; font-weight: 600; text-decoration: none; }
+header .library-link:active { opacity: .7; }
+.player .sleep { font-size: 12px; font-weight: 600; color: var(--accent); min-width: 46px; padding: 8px 2px; font-variant-numeric: tabular-nums; }
+.player .sleep.active { color: #fff; background: var(--accent); border-radius: 99px; padding: 6px 10px; }
+.chapter .go { color: var(--muted); font-weight: 600; padding: 8px 2px; }
+.chapter.book-row { cursor: pointer; }
 </style>
 </head>
 <body>
@@ -66,6 +72,7 @@ a.dl { color: var(--muted); font-size: 12px; text-decoration: none; }
   <div class="brand">声息 · SHENGXI</div>
   <h1 id="book-title">加载中…</h1>
   <div class="meta" id="book-meta"></div>
+  <a id="library-link" class="library-link" hidden></a>
   <div class="dl-all" id="dl-all" hidden>
     <button id="cache-btn">☁ 离线缓存（电脑关机也能听）</button>
     <button id="dl-all-btn">⬇ 下载全部（MP3 + 讲稿）</button>
@@ -82,6 +89,7 @@ a.dl { color: var(--muted); font-size: 12px; text-decoration: none; }
     <button class="play" id="play" aria-label="播放">▶</button>
     <button class="step" id="fwd" aria-label="快进15秒">+15s</button>
     <button id="next" aria-label="下一章">⏭</button>
+    <button class="sleep" id="sleep-btn" aria-label="睡眠定时">定时</button>
   </div>
   <div class="row">
     <div class="now"><b id="now-title"></b><small id="now-time">--:-- / --:--</small></div>
@@ -95,8 +103,27 @@ a.dl { color: var(--muted); font-size: 12px; text-decoration: none; }
 <script>
 (function () {
   'use strict';
-  var token = decodeURIComponent(location.pathname.split('/')[2] || '');
-  var api = '/m/' + encodeURIComponent(token);
+  /* 页面按路径分三种模式：A 单书 /m/{token}；B 书架 /m/library/{token}；C 书架内某本 /m/library/{token}/book/{pid}。*/
+  var pathParts = location.pathname.split('/').filter(Boolean);
+  var mode = 'A';
+  var token = '';
+  var pid = '';
+  if (pathParts[0] === 'm' && pathParts[1] === 'library') {
+    token = decodeURIComponent(pathParts[2] || '');
+    if (pathParts[3] === 'book') { mode = 'C'; pid = decodeURIComponent(pathParts[4] || ''); }
+    else { mode = 'B'; }
+  } else {
+    token = decodeURIComponent(pathParts[1] || '');
+  }
+  var api = mode === 'A' ? '/m/' + encodeURIComponent(token)
+    : mode === 'B' ? '/m/library/' + encodeURIComponent(token)
+    : '/m/library/' + encodeURIComponent(token) + '/book/' + encodeURIComponent(pid);
+  /* 学习进度只与单书 token 绑定；书架模式 C 不调用 /progress。*/
+  var progressEnabled = mode === 'A';
+  /* 离线缓存 IDB key 带 pid，书架内不同书互不串缓存。*/
+  function cacheKey(id) { return mode === 'C' ? pid + ':' + id : id; }
+  function bookStoreKey() { return mode === 'C' ? token + ':' + pid : token; }
+  function lastChapterKey() { return 'sx-last-chapter:' + token + (pid ? ':' + pid : ''); }
   var audio = document.getElementById('audio');
   var chapters = [];
   var current = -1;
@@ -161,25 +188,25 @@ a.dl { color: var(--muted); font-size: 12px; text-decoration: none; }
     }).catch(function () {});
   }
   function cacheAudio(ch) {
-    if (cachedIds[ch.id]) return Promise.resolve(true);
-    cachedIds[ch.id] = true;
+    if (cachedIds[cacheKey(ch.id)]) return Promise.resolve(true);
+    cachedIds[cacheKey(ch.id)] = true;
     return fetch(api + '/audio/' + encodeURIComponent(ch.id)).then(function (res) {
       if (!res.ok) throw new Error('fetch fail');
       return res.blob();
     }).then(function (blob) {
-      return idbPut('audio', ch.id, blob);
+      return idbPut('audio', cacheKey(ch.id), blob);
     }).then(function () {
       renderList(); if (current >= 0) refreshRow(current);
       return true;
     }).catch(function () {
-      delete cachedIds[ch.id];
+      delete cachedIds[cacheKey(ch.id)];
       return false;
     });
   }
   function resolveAudio(ch) {
-    return idbGet('audio', ch.id).then(function (blob) {
+    return idbGet('audio', cacheKey(ch.id)).then(function (blob) {
       if (blob) {
-        cachedIds[ch.id] = true;
+        cachedIds[cacheKey(ch.id)] = true;
         if (objectURL) URL.revokeObjectURL(objectURL);
         objectURL = URL.createObjectURL(blob);
         return objectURL;
@@ -192,7 +219,7 @@ a.dl { color: var(--muted); font-size: 12px; text-decoration: none; }
     });
   }
 
-  function posKey(id) { return 'sx-pos:' + token + ':' + id; }
+  function posKey(id) { return 'sx-pos:' + token + (pid ? ':' + pid : '') + ':' + id; }
   function fmt(sec) {
     if (!isFinite(sec)) return '--:--';
     sec = Math.max(0, Math.round(sec));
@@ -205,16 +232,16 @@ a.dl { color: var(--muted); font-size: 12px; text-decoration: none; }
     if (!chapters.length) { list.innerHTML = '<div class="empty">这本书还没有已合成的音频。<br/>回到电脑端「音频与导出」先生成。</div>'; return; }
     list.innerHTML = '';
     chapters.forEach(function (ch, index) {
-      var pos = Number(localStorage.getItem(posKey(ch.id)) || 0);
+    var pos = Number(localStorage.getItem(posKey(ch.id)) || 0);
       var pct = ch.duration_seconds ? Math.min(100, Math.round(pos / ch.duration_seconds * 100)) : 0;
-      var learnable = !!ch.section_id;
+      var learnable = !!ch.section_id && progressEnabled;
       var row = document.createElement('div');
       row.className = 'chapter' + (index === current ? ' playing' : '');
       row.dataset.index = index;
       row.innerHTML = '<div class="num">' + (index + 1) + '</div>' +
         '<div class="info"><div class="title"></div><div class="sub"><span>' + fmt(ch.duration_seconds) + '</span>' +
         (ch.chapter ? '' : '<span class="chip">整篇</span>') +
-        (cachedIds[ch.id] ? '<span class="chip cached">已缓存</span>' : '') +
+        (cachedIds[cacheKey(ch.id)] ? '<span class="chip cached">已缓存</span>' : '') +
         (learnable ? '<span class="chip' + (ch.learned ? ' done' : '') + '" data-learn>' + (ch.learned ? '已学' : '未学') + '</span>' : '') + '</div>' +
         '<div class="bar"><i style="width:' + pct + '%"></i></div></div>' +
         (learnable ? '<button class="learn-btn' + (ch.learned ? ' done' : '') + '" data-learn-btn>' + (ch.learned ? '✓ 已学' : '标记已学') + '</button>' : '');
@@ -249,7 +276,7 @@ a.dl { color: var(--muted); font-size: 12px; text-decoration: none; }
     var ch = chapters[index];
     current = index;
     initialIndex = index;
-    localStorage.setItem('sx-last-chapter:' + token, ch.id);
+    localStorage.setItem(lastChapterKey(), ch.id);
     var resume = Number(localStorage.getItem(posKey(ch.id)) || 0);
     var rate = speeds[speedIndex];
     resolveAudio(ch).then(function (url) {
@@ -293,6 +320,7 @@ a.dl { color: var(--muted); font-size: 12px; text-decoration: none; }
   }
 
   function flushQueue() {
+    if (!progressEnabled) return;
     var raw = localStorage.getItem('sx-queue:' + token);
     if (!raw) return;
     var queue;
@@ -322,7 +350,7 @@ a.dl { color: var(--muted); font-size: 12px; text-decoration: none; }
 
   function toggleLearn(index) {
     var ch = chapters[index];
-    if (!ch || !ch.section_id) return;
+    if (!ch || !ch.section_id || !progressEnabled) return;
     var target = !ch.learned;
     fetch(api + '/progress', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ audio_id: ch.id, completed: target }) })
       .then(function (res) { return res.json(); })
@@ -362,7 +390,7 @@ a.dl { color: var(--muted); font-size: 12px; text-decoration: none; }
         $('player').hidden = false;
         current = -1;
         // 优先展示上次收听的章节，但不自动播放；文稿和下载也可直接使用。
-        var lastId = localStorage.getItem('sx-last-chapter:' + token);
+        var lastId = localStorage.getItem(lastChapterKey());
         initialIndex = Math.max(0, chapters.findIndex(function (chapter) { return chapter.id === lastId; }));
         var first = chapters[initialIndex];
         var duration = first.duration_seconds || 0;
@@ -376,9 +404,9 @@ a.dl { color: var(--muted); font-size: 12px; text-decoration: none; }
         $('transcript').textContent = first.text || '这一章暂时没有配套文稿。';
         $('transcript-btn').hidden = !first.text;
         $('dl-all').hidden = false;
-        var cachedCount = chapters.filter(function (ch) { return cachedIds[ch.id]; }).length;
+        var cachedCount = chapters.filter(function (ch) { return cachedIds[cacheKey(ch.id)]; }).length;
         $('cache-btn').textContent = '☁ 离线缓存（' + cachedCount + ' / ' + chapters.length + ' 章）';
-        if (offlineMode) $('dl-all-btn').hidden = true;
+        if (offlineMode || mode === 'C') $('dl-all-btn').hidden = true; // 书架单书模式暂无整本打包接口，先隐藏避免点击报错
         else {
           var total = data.chapters.length || data.whole_book.length;
           $('dl-all-btn').textContent = '⬇ 下载全部（' + total + ' 章 MP3 + 讲稿）';
@@ -387,16 +415,74 @@ a.dl { color: var(--muted); font-size: 12px; text-decoration: none; }
     });
   }
 
+  /* ===== 模式 B：书架列表页 ===== */
+  function fmtBookDuration(sec) {
+    sec = Number(sec) || 0;
+    if (!sec) return '时长待生成';
+    var minutes = Math.round(sec / 60);
+    if (minutes >= 60) return Math.floor(minutes / 60) + ' 小时 ' + (minutes % 60) + ' 分';
+    return minutes + ' 分钟';
+  }
+  function fmtBookDate(value) {
+    try { return value ? new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric' }).format(new Date(value)) : ''; }
+    catch (error) { return ''; }
+  }
+  function initLibraryPage() {
+    document.title = '声息 · 书架';
+    $('book-title').textContent = '我的书架';
+    $('book-meta').textContent = '同一 Wi-Fi 下可打开书架里的书';
+    $('list').innerHTML = '<div class="empty">正在获取书架…</div>';
+    fetch(api + '/data').then(function (res) {
+      if (!res.ok) throw new Error('bad');
+      return res.json();
+    }).then(function (data) {
+      var books = (data && data.books) || [];
+      if (!books.length) {
+        $('list').innerHTML = '<div class="empty">书架里还没有可收听的书。<br/>回到电脑端生成音频后再来看。</div>';
+        return;
+      }
+      $('book-meta').textContent = '共 ' + books.length + ' 本 · 点开继续听';
+      $('list').innerHTML = '';
+      books.forEach(function (book) {
+        var row = document.createElement('div');
+        row.className = 'chapter book-row';
+        row.innerHTML = '<div class="num">📖</div>'
+          + '<div class="info"><div class="title"></div><div class="sub"><span>' + fmtBookDate(book.updated_at) + '</span><span>' + fmtBookDuration(book.total_seconds) + '</span><span>' + Number(book.chapters || 0) + ' 章</span></div></div>'
+          + '<div class="go">→</div>';
+        row.querySelector('.title').textContent = book.title || '未命名';
+        row.addEventListener('click', function () {
+          location.href = api + '/book/' + encodeURIComponent(book.project_id);
+        });
+        $('list').appendChild(row);
+      });
+    }).catch(function () {
+      $('list').innerHTML = '<div class="error"><b>无法打开书架</b>链接不存在、已过期或已被吊销；请回到电脑端重新生成二维码。</div>';
+    });
+  }
+  if (mode === 'B') { initLibraryPage(); return; }
+
+  /* ===== 模式 A：探一次书架入口；接口并行开发中，404 或字段缺失时静默隐藏。===== */
+  if (mode === 'A') {
+    fetch(api + '/library-hint').then(function (res) { return res.ok ? res.json() : null; }).then(function (hint) {
+      if (!hint || !hint.library_url || !(Number(hint.book_count) > 1)) return;
+      var link = $('library-link');
+      if (!link) return;
+      link.textContent = '书架里的其他 ' + Number(hint.book_count) + ' 本书 →';
+      link.href = hint.library_url;
+      link.hidden = false;
+    }).catch(function () {});
+  }
+
   fetch(api + '/data').then(function (res) {
     if (!res.ok) throw new Error('链接已失效');
     return res.json();
   }).then(function (data) {
     flushQueue();
-    idbPut('book', token, data).catch(function () {});
+    idbPut('book', bookStoreKey(), data).catch(function () {});
     applyData(data);
   }).catch(function () {
     // 电脑不在线：尝试用手机里缓存的书目继续（页面壳已加载时仍可播放已缓存章节）
-    idbGet('book', token).then(function (data) {
+    idbGet('book', bookStoreKey()).then(function (data) {
       if (!data) throw new Error('no cache');
       offlineMode = true;
       $('offline').hidden = false;
@@ -409,7 +495,7 @@ a.dl { color: var(--muted); font-size: 12px; text-decoration: none; }
   $('cache-btn').addEventListener('click', function () {
     var btn = $('cache-btn');
     var hint = $('dl-all-hint');
-    var todo = chapters.filter(function (ch) { return !cachedIds[ch.id]; });
+    var todo = chapters.filter(function (ch) { return !cachedIds[cacheKey(ch.id)]; });
     hint.style.display = 'block';
     if (!todo.length) {
       btn.classList.add('cached');
@@ -479,7 +565,7 @@ a.dl { color: var(--muted); font-size: 12px; text-decoration: none; }
   audio.addEventListener('ended', function () {
     var ch = chapters[current];
     // 自然听完本章（不是手动切章）：自动标记已学，与 Mac 端学习进度同步。
-    if (ch && ch.section_id && !ch.learned) {
+    if (ch && ch.section_id && progressEnabled && !ch.learned) {
       var finished = current;
       fetch(api + '/progress', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ audio_id: ch.id, completed: true }) })
         .then(function (res) { return res.json(); })
@@ -498,6 +584,65 @@ a.dl { color: var(--muted); font-size: 12px; text-decoration: none; }
   });
   var savedSpeed = Number(localStorage.getItem('sx-speed') || 0);
   if (savedSpeed > 0 && savedSpeed < speeds.length) { speedIndex = savedSpeed; audio.playbackRate = speeds[speedIndex]; $('speed').textContent = speeds[speedIndex] + '×'; }
+
+  /* ===== 睡眠定时器：存绝对到期时间戳，切章、切链接、重新打开页面都不打断剩余倒计时。===== */
+  var SLEEP_KEY = 'sx-sleep-timer';
+  var sleepEndsAt = 0;
+  var sleepMinutes = 0;
+  var sleepTimerId = null;
+  function fmtSleepRemain(ms) {
+    var total = Math.max(0, Math.ceil(ms / 1000));
+    return Math.floor(total / 60) + ':' + String(total % 60).padStart(2, '0');
+  }
+  function resetSleepButton() {
+    var btn = $('sleep-btn');
+    if (btn) { btn.textContent = '定时'; btn.classList.remove('active'); }
+  }
+  function stopSleepTimer(clearStore) {
+    sleepEndsAt = 0;
+    sleepMinutes = 0;
+    if (sleepTimerId) { clearInterval(sleepTimerId); sleepTimerId = null; }
+    if (clearStore) { try { localStorage.removeItem(SLEEP_KEY); } catch (error) {} }
+    resetSleepButton();
+  }
+  function tickSleepTimer() {
+    var remain = sleepEndsAt - Date.now();
+    if (remain <= 0) {
+      try { audio.pause(); } catch (error) {}
+      stopSleepTimer(true);
+      return;
+    }
+    var btn = $('sleep-btn');
+    if (btn) btn.textContent = fmtSleepRemain(remain);
+  }
+  function startSleepTimer(minutes) {
+    sleepMinutes = minutes;
+    sleepEndsAt = Date.now() + minutes * 60000;
+    try { localStorage.setItem(SLEEP_KEY, JSON.stringify({ endsAt: sleepEndsAt, minutes: minutes })); } catch (error) {}
+    if (sleepTimerId) clearInterval(sleepTimerId);
+    sleepTimerId = setInterval(tickSleepTimer, 1000);
+    var btn = $('sleep-btn');
+    if (btn) btn.classList.add('active');
+    tickSleepTimer();
+  }
+  $('sleep-btn').addEventListener('click', function () {
+    var steps = [15, 30, 60, 0];
+    var nextMinutes = steps[(steps.indexOf(sleepMinutes) + 1) % steps.length];
+    if (!nextMinutes) { stopSleepTimer(true); return; } // 60 分钟后再点一次 = 关闭，不触发到点暂停
+    startSleepTimer(nextMinutes);
+  });
+  try {
+    var savedSleep = JSON.parse(localStorage.getItem(SLEEP_KEY) || 'null');
+    if (savedSleep && Number(savedSleep.endsAt) > Date.now() && [15, 30, 60].indexOf(Number(savedSleep.minutes)) >= 0) {
+      sleepMinutes = Number(savedSleep.minutes);
+      sleepEndsAt = Number(savedSleep.endsAt);
+      sleepTimerId = setInterval(tickSleepTimer, 1000);
+      $('sleep-btn').classList.add('active');
+      tickSleepTimer();
+    } else if (savedSleep) {
+      localStorage.removeItem(SLEEP_KEY);
+    }
+  } catch (error) {}
 
   var lastSave = 0;
   var lastSync = 0;

@@ -19,7 +19,7 @@ import tempfile
 import uuid
 import zipfile
 import time
-from collections import Counter
+from collections import Counter, deque
 from datetime import datetime, timedelta, timezone
 from html import escape, unescape
 from pathlib import Path
@@ -126,8 +126,60 @@ async def restrict_non_local_requests(request: Request, call_next):
         return Response(status_code=403, content="声息的完整功能仅限本机访问。")
     return await call_next(request)
 
+
+MOBILE_LOOPBACK_HOSTS = {"127.0.0.1", "::1", "testclient"}
+MOBILE_RATE_LIMIT_PER_MINUTE = 120
+MOBILE_RATE_LIMIT_LOOPBACK_PER_MINUTE = 600
+MOBILE_RATE_WINDOW_SECONDS = 60.0
+MOBILE_RATE_HITS: dict[str, deque] = {}  # ip -> 最近一分钟内的请求时间戳
+RECENT_ERRORS: deque = deque(maxlen=50)  # 最近发生的模型/语音合成失败，供诊断页展示
+
+
+def record_recent_error(message: str) -> None:
+    """记录一次失败（模型调用或语音合成），最多保留 50 条，超出自动淘汰最旧的。"""
+    RECENT_ERRORS.append({"ts": now_iso(), "message": str(message)[:500]})
+
+
+def mobile_lan_guard_blocked(request: Request, lan_share_enabled: bool) -> bool:
+    """仅本机模式判断：关闭局域网分享后，手机页只允许本机回环访问。"""
+    if lan_share_enabled:
+        return False
+    host = request.client.host if request.client else ""
+    return host not in MOBILE_LOOPBACK_HOSTS
+
+
+def mobile_rate_limit_exceeded(ip: str) -> bool:
+    """滑动窗口限流：同一 IP 每分钟请求数超限则拒绝；本机回环放宽到更高阈值。"""
+    limit = MOBILE_RATE_LIMIT_LOOPBACK_PER_MINUTE if ip in MOBILE_LOOPBACK_HOSTS else MOBILE_RATE_LIMIT_PER_MINUTE
+    now = time.monotonic()
+    hits = MOBILE_RATE_HITS.setdefault(ip, deque())
+    while hits and now - hits[0] >= MOBILE_RATE_WINDOW_SECONDS:
+        hits.popleft()
+    if len(hits) >= limit:
+        return True
+    hits.append(now)
+    return False
+
+
+@app.middleware("http")
+async def mobile_route_guard(request: Request, call_next):
+    """手机页 /m/* 守卫：仅本机模式下外部访问一律 404，并按 IP 滑动窗口限流。"""
+    if request.url.path.startswith("/m/"):
+        host = request.client.host if request.client else ""
+        lan_share_enabled = bool(get_internal_provider_settings().get("lan_share_enabled", True))
+        if mobile_lan_guard_blocked(request, lan_share_enabled):
+            return Response(status_code=404, content="链接不存在或已失效。")
+        if mobile_rate_limit_exceeded(host):
+            return Response(
+                content=json.dumps({"detail": "访问过于频繁，请稍后再试。"}, ensure_ascii=False),
+                status_code=429,
+                media_type="application/json",
+                headers={"Retry-After": "60"},
+            )
+    return await call_next(request)
+
 RELEASE_REPOSITORY = os.getenv("LAWFLOW_RELEASE_REPOSITORY", "donghyq/ListenWise").strip()
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 MODEL_PRESETS = {
     "openai": {"provider_name": "OpenAI", "base_url": "https://api.openai.com/v1", "model_name": "gpt-4.1-mini", "tts_model": "gpt-4o-mini-tts"},
@@ -267,6 +319,8 @@ class ProviderSettings(BaseModel):
     asr_base_url: str = ""
     asr_model: str = ""
     asr_api_key: str = ""
+    # 仅本机模式：关闭后手机页 /m/* 只允许本机回环访问。
+    lan_share_enabled: bool = True
 
 
 class ProviderConnectionTest(BaseModel):
@@ -378,6 +432,8 @@ class ContentRequest(BaseModel):
 
 class NarrativeOutlineRequest(BaseModel):
     document_id: str
+    # 相同参数重复创建时默认复用同项目已有大纲；置为 False 强制新建。
+    allow_reuse: bool = True
     source_plan_id: str = ""
     title: str = Field(min_length=1, max_length=200)
     source_block_ids: list[str] = Field(min_length=1)
@@ -598,6 +654,7 @@ def init_db() -> None:
             block_count INTEGER NOT NULL DEFAULT 0,
             structure_json TEXT NOT NULL DEFAULT '{}',
             source_url TEXT NOT NULL DEFAULT '',
+            content_fingerprint TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS source_blocks (
@@ -754,6 +811,18 @@ def init_db() -> None:
             value TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS generation_jobs (
+            outline_id TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
+            total INTEGER NOT NULL DEFAULT 0,
+            current INTEGER NOT NULL DEFAULT 0,
+            heading TEXT NOT NULL DEFAULT '',
+            message TEXT NOT NULL DEFAULT '',
+            sections_json TEXT NOT NULL DEFAULT '{}',
+            outline_hash TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
         """
     )
     existing_columns = {row[1] for row in conn.execute("PRAGMA table_info(projects)").fetchall()}
@@ -774,6 +843,8 @@ def init_db() -> None:
     source_columns = {row[1] for row in conn.execute("PRAGMA table_info(source_documents)").fetchall()}
     if "source_url" not in source_columns:
         conn.execute("ALTER TABLE source_documents ADD COLUMN source_url TEXT NOT NULL DEFAULT ''")
+    if "content_fingerprint" not in source_columns:
+        conn.execute("ALTER TABLE source_documents ADD COLUMN content_fingerprint TEXT NOT NULL DEFAULT ''")
     conn.execute(
         "INSERT INTO app_metadata (key, value, updated_at) VALUES ('schema_version', ?, ?) "
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
@@ -1306,9 +1377,10 @@ def ai_chapter_proposal(blocks: list[dict], feedback: str = "") -> tuple[list[tu
         "4. 不要同时选择父子标题；选中的章节按材料顺序排列，尽量覆盖全文。\n"
         "5. 为每章设计一个具体的学习问题（这一章要弄清楚什么），避免空泛套话；问题不超过 40 字。\n"
         "6. 为每章起一个简洁标题：用 5–20 字概括本章学习主题；不要照抄原文的小节编号（如 一、/（一）/C./1.），也不要带“第X章”字样。\n"
-        "7. 直接输出 JSON，不要任何解释性文字。\n\n"
+        "7. 为每章补充一个切分理由（reason），不超过 40 字，说明为什么在这里收束本章、开启下一章。\n"
+        "8. 直接输出 JSON，不要任何解释性文字。\n\n"
         "候选标题：\n" + listing + "\n\n"
-        '只输出 JSON，格式：{"chapters":[{"heading_id":"候选中的 id","title":"章节标题","question":"学习问题"}]}'
+        '只输出 JSON，格式：{"chapters":[{"heading_id":"候选中的 id","title":"章节标题","question":"学习问题","reason":"为什么这样切，不超过40字"}]}'
     )
     if feedback.strip():
         user += "\n\n用户对上一版章节划分的意见（必须遵守，优先级高于上述默认规则）：\n" + feedback.strip()[:2000]
@@ -1333,6 +1405,7 @@ def ai_chapter_proposal(blocks: list[dict], feedback: str = "") -> tuple[list[tu
     by_id = {c["id"]: c for c in candidates}
     parsed: list[tuple[int, str, str]] = []
     titles: dict[str, str] = {}
+    reasons: dict[str, str] = {}
     for item in items:
         if not isinstance(item, dict):
             continue
@@ -1344,6 +1417,9 @@ def ai_chapter_proposal(blocks: list[dict], feedback: str = "") -> tuple[list[tu
         title = re.sub(r"^第[0-9一二三四五六七八九十百]+章\s*[·:：]?\s*", "", title)
         if title:
             titles[heading_id] = title[:40]
+        reason = clean_text(str(item.get("reason") or ""))[:40]
+        if reason:
+            reasons[heading_id] = reason
         parsed.append((by_id[heading_id]["sequence"], heading_id, question))
     parsed.sort()
     picked: list[tuple[str, str]] = []
@@ -1359,7 +1435,7 @@ def ai_chapter_proposal(blocks: list[dict], feedback: str = "") -> tuple[list[tu
     # 只有完全解不出有效章节才回退到规则切分。
     if not picked:
         raise ValueError("模型返回的有效章节不足")
-    return picked, titles
+    return picked, titles, reasons
 
 
 def strip_heading_numbering(text: str) -> str:
@@ -1788,6 +1864,36 @@ def verification_label(mode: str) -> str:
     return VERIFICATION_MODES.get(mode, VERIFICATION_MODES["material_check"])["name"]
 
 
+def record_model_usage(usage: dict | None) -> None:
+    """把模型响应里的 token 用量累加进本地设置；统计失败不能影响生成主流程。"""
+    if not isinstance(usage, dict):
+        return
+    try:
+        prompt_tokens = int(usage.get("prompt_tokens") or 0)
+        completion_tokens = int(usage.get("completion_tokens") or 0)
+    except (TypeError, ValueError):
+        return
+    if prompt_tokens <= 0 and completion_tokens <= 0:
+        return
+    try:
+        with db() as conn:
+            row = conn.execute("SELECT setting_value FROM settings WHERE setting_key = 'usage_totals'").fetchone()
+            current = parse_json(row["setting_value"], {}) if row else {}
+            totals = {
+                "calls": int(current.get("calls") or 0) + 1,
+                "prompt_tokens": int(current.get("prompt_tokens") or 0) + prompt_tokens,
+                "completion_tokens": int(current.get("completion_tokens") or 0) + completion_tokens,
+                "updated_at": now_iso(),
+            }
+            conn.execute(
+                "INSERT INTO settings (setting_key, setting_value, updated_at) VALUES ('usage_totals', ?, ?) "
+                "ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value, updated_at = excluded.updated_at",
+                (json.dumps(totals, ensure_ascii=False), totals["updated_at"]),
+            )
+    except (sqlite3.Error, TypeError, ValueError):
+        pass  # 用量只是旁路统计，任何失败都静默忽略
+
+
 def model_chat(messages: list[dict], temperature: float = 0.35, max_tokens: int = 4096) -> str:
     settings = get_internal_provider_settings()
     if not all(settings.get(key, "").strip() for key in ["base_url", "model_name", "api_key"]):
@@ -1799,12 +1905,17 @@ def model_chat(messages: list[dict], temperature: float = 0.35, max_tokens: int 
     try:
         response = httpx.post(endpoint, headers={"Authorization": "Bearer " + settings["api_key"], "Content-Type": "application/json"}, json={"model": settings["model_name"], "messages": messages, "temperature": temperature, "max_tokens": max_tokens}, timeout=180.0)
         response.raise_for_status()
-        content = response.json()["choices"][0]["message"]["content"]
+        payload = response.json()
+        content = payload["choices"][0]["message"]["content"]
+        record_model_usage(payload.get("usage"))
     except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as error:
         failed = getattr(error, "response", None)
         detail = failed.text[:500] if failed is not None else str(error)
-        raise HTTPException(status_code=502, detail=provider_error_message(detail)) from error
+        message = provider_error_message(detail)
+        record_recent_error("模型调用失败：" + message)
+        raise HTTPException(status_code=502, detail=message) from error
     if not isinstance(content, str) or not content.strip():
+        record_recent_error("模型服务未返回可用文本。")
         raise HTTPException(status_code=502, detail="模型服务未返回可用文本。")
     return content.strip()
 
@@ -2067,6 +2178,18 @@ def speech_chunk(text: str, settings: dict) -> tuple[bytes, str]:
 
 
 def synthesize_audio(script: str, title: str, settings: dict) -> tuple[Path, str, int]:
+    """合成音频；失败先记入诊断错误列表，再原样抛出给调用方。"""
+    try:
+        return _synthesize_audio_impl(script, title, settings)
+    except HTTPException as error:
+        record_recent_error("语音合成失败：" + str(error.detail))
+        raise
+    except Exception as error:
+        record_recent_error("语音合成失败：" + str(error))
+        raise
+
+
+def _synthesize_audio_impl(script: str, title: str, settings: dict) -> tuple[Path, str, int]:
     if not script.strip():
         raise HTTPException(400, "音频脚本不能为空。")
     script = spoken_text(script)  # 合成前再过一遍口语清洗，兼容用户手改过的脚本
@@ -2249,6 +2372,11 @@ def normalize_narrative_outline(raw: dict, request: NarrativeOutlineRequest, blo
         "minimum_output_mode": request.minimum_output_mode,
         "minimum_output_ratio": request.minimum_output_ratio,
         "web_research_mode": request.web_research_mode,
+        # 记录创建时的请求参数，供同参数重复创建时的复用判定使用。
+        "target_words": request.target_words,
+        "verification_mode": request.verification_mode,
+        "scenario": request.scenario,
+        "target_duration": request.target_duration,
     }
 
 
@@ -2420,7 +2548,7 @@ def generate_podcast_opening(outline: dict, audience: str, reviewer_guidance: st
     return strip_written_markers(text)
 
 
-def generate_narrative_markdown(outline: dict, blocks: list[dict], audience: str, style_profile: str, transform_mode: str = "adapt", scenario: str = "topic_learning", target_duration: int = 10, web_research_mode: str = "discover", progress_key: str = "", reviewer_guidance: str = "") -> tuple[str, list[dict], dict]:
+def generate_narrative_markdown(outline: dict, blocks: list[dict], audience: str, style_profile: str, transform_mode: str = "adapt", scenario: str = "topic_learning", target_duration: int = 10, web_research_mode: str = "discover", progress_key: str = "", reviewer_guidance: str = "", existing_sections: dict[str, str] | None = None, on_section_done=None) -> tuple[str, list[dict], dict]:
     profile = get_style_profiles().get(style_profile)
     if profile is None:
         raise HTTPException(status_code=400, detail="未知的写作风格画像。")
@@ -2438,14 +2566,29 @@ def generate_narrative_markdown(outline: dict, blocks: list[dict], audience: str
     rendered_sections, section_sources = [], []
     podcast_profile = style_profile == PODCAST_CHAPTER_PROFILE
     opening_text = ""
+    cached_sections = existing_sections or {}
     if podcast_profile and len(outline["sections"]) >= 2:
         # 播客稿先来一段开场白：欢迎、主线预告、把话头交给第一章，成稿不再突兀地直接进第一章。
-        opening_text = generate_podcast_opening(outline, audience, reviewer_guidance)
+        cached_opening = cached_sections.get("opening", "")
+        if cached_opening.strip():
+            opening_text = cached_opening  # 断点续作：开场白已完成，直接复用，不再调用模型。
+        else:
+            opening_text = generate_podcast_opening(outline, audience, reviewer_guidance)
+            if on_section_done:
+                on_section_done("opening", opening_text, 0, "开场")
         opening_sources = list(dict.fromkeys(block_id for section in outline["sections"] for block_id in section.get("source_block_ids", [])))
         section_sources.append({"section_id": "opening", "heading": "开场", "source_block_ids": opening_sources})
     GENERATION_PROGRESS[progress_key] = {"status": "running", "total": len(outline["sections"]), "current": 0, "heading": ""}
     for section_index, section in enumerate(outline["sections"]):
         GENERATION_PROGRESS[progress_key] = {"status": "running", "total": len(outline["sections"]), "current": section_index + 1, "heading": section["heading"]}
+        if cached_sections.get(section["id"], "").strip():
+            # 断点续作：这一节此前已生成完成，直接复用结果，不重复调用模型。
+            section_text = cached_sections[section["id"]]
+            if on_section_done:
+                on_section_done(section["id"], section_text, section_index + 1, section["heading"])
+            rendered_sections.append("## {}\n\n{}".format(section["heading"], section_text))
+            section_sources.append({"section_id": section["id"], "heading": section["heading"], "source_block_ids": section["source_block_ids"]})
+            continue
         selected = [block_map[block_id] for block_id in section["source_block_ids"] if block_id in block_map]
         dossier = source_dossier(selected, max_chars_per_block=2400, max_total_chars=SOURCE_BUDGET_CHARS)
         points = "\n".join("- " + point for point in section.get("key_points", [])) or "- 围绕本节材料展开，不添加材料外事实。"
@@ -2519,6 +2662,8 @@ def generate_narrative_markdown(outline: dict, blocks: list[dict], audience: str
             # 口播稿不应残留书面强调标记；漏网的加粗标签统一转为平文。
             # 字数不限制（podcast-rewriter 观感：深度优先、自由生长），不再做逐章压缩。
             section_text = strip_written_markers(section_text)
+        if on_section_done:
+            on_section_done(section["id"], section_text, section_index + 1, section["heading"])
         rendered_sections.append("## {}\n\n{}".format(section["heading"], section_text))
         section_sources.append({"section_id": section["id"], "heading": section["heading"], "source_block_ids": section["source_block_ids"]})
     GENERATION_PROGRESS[progress_key] = {"status": "done", "total": len(outline["sections"]), "current": len(outline["sections"]), "heading": ""}
@@ -2678,16 +2823,18 @@ def create_daily_brief_project(subscription: dict, items: list[dict]) -> str:
     conn.commit()
     conn.close()
     for item in items:
-        create_text_source(project_id, TextSourceCreate(title=item['title'], content=item['content'] or item['title'], source_url=item['url']))
+        save_text_source(project_id, title=item['title'], content=item['content'] or item['title'], source_url=item['url'])
     digest = "\n\n".join(
         "## {title}\n来源：{url}\n发布时间：{published}\n{content}".format(
             title=item['title'], url=item['url'] or '未提供', published=item['published_at'] or '未提供', content=item['content'] or item['title'],
         )
         for item in items
     )
-    digest_document = create_text_source(
+    digest_document = save_text_source(
         project_id,
-        TextSourceCreate(title=f"{subscription['name']} · 当日资讯汇总", content=digest, source_url=subscription['feed_url']),
+        title=f"{subscription['name']} · 当日资讯汇总",
+        content=digest,
+        source_url=subscription['feed_url'],
     )
     if subscription.get('auto_generate') and model_generation_ready():
         document = get_document(digest_document['id'])
@@ -2704,7 +2851,7 @@ def create_daily_brief_project(subscription: dict, items: list[dict]) -> str:
             scenario='daily_brief',
             target_duration=5,
         )
-        outline_record = create_narrative_outline_route(project_id, request)
+        outline_record = create_narrative_outline_route(project_id, request, response=Response())
         confirm_narrative_outline(outline_record['id'], NarrativeOutlineConfirm(outline=outline_record['outline']))
         narrative = generate_narrative_content(outline_record['id'])
         create_audio_script(project_id, AudioScriptRequest(narrative_content_id=narrative['id'], naturalize=True))
@@ -2762,6 +2909,9 @@ async def daily_brief_scheduler() -> None:
 
 @app.on_event("startup")
 async def start_daily_brief_scheduler() -> None:
+    # 上次运行中的生成任务不可能还在跑：启动时统一标记为可续作的中断状态。
+    with db() as conn:
+        conn.execute("UPDATE generation_jobs SET status = 'interrupted', message = '应用重启，生成中断，可继续', updated_at = ? WHERE status = 'running'", (now_iso(),))
     asyncio.create_task(daily_brief_scheduler())
 
 
@@ -2803,6 +2953,44 @@ def health():
 @app.get("/api/app/version")
 def app_version():
     return latest_release_status()
+
+
+@app.get("/api/diagnostics")
+def get_diagnostics():
+    """运行环境自检：版本、数据目录、依赖可用性、最近的失败记录和生成任务。"""
+    settings = get_internal_provider_settings()
+    base_url = str(settings.get("base_url") or "")
+    model_name = str(settings.get("model_name") or "")
+    api_key = str(settings.get("api_key") or "")
+    tts_provider = str(settings.get("tts_provider") or "compatible")
+    if tts_provider == "macos_say":
+        tts_available = sys.platform == "darwin" and bool(shutil.which("say"))
+    elif tts_provider == "windows_sapi":
+        tts_available = sys.platform == "win32"
+    elif tts_provider == "edge_tts":
+        tts_available = True  # 在线失败时自动回落本机语音
+    else:
+        tts_base = str(settings.get("tts_base_url") or base_url).strip()
+        tts_key = str(settings.get("tts_api_key") or api_key).strip()
+        tts_available = bool(tts_base and tts_key)
+    with db() as conn:
+        jobs = conn.execute("SELECT outline_id, status, current, total, updated_at FROM generation_jobs ORDER BY updated_at DESC LIMIT 10").fetchall()
+    return {
+        "version": __version__,
+        "data_dir": str(DATA_DIR),
+        "db_size_bytes": DB_PATH.stat().st_size if DB_PATH.is_file() else 0,
+        "ffmpeg_available": bool(shutil.which("ffmpeg")),
+        "provider": {
+            "configured": bool(base_url and model_name and api_key),
+            "provider_name": str(settings.get("provider_name") or ""),
+            "model_name": model_name,
+            "base_url": base_url,
+            "api_key_configured": bool(api_key),
+        },
+        "tts": {"provider": tts_provider, "available": tts_available},
+        "recent_errors": list(RECENT_ERRORS)[-20:],
+        "jobs": [dict(job) for job in jobs],
+    }
 
 
 def project_audio_durations(conn: sqlite3.Connection, project_id: str | None = None) -> dict[str, int]:
@@ -2993,11 +3181,12 @@ def create_demo_project():
         target_duration=5,
         audio_enabled=True,
     ))
-    source = create_text_source(project["id"], TextSourceCreate(
+    source = save_text_source(
+        project["id"],
         title=DEMO_SOURCE_TITLE,
         content=DEMO_SOURCE_TEXT,
         source_url="",
-    ))
+    )
     document = get_document(source["id"])
     source_ids = [block["id"] for block in document["blocks"] if block["kind"] == "paragraph"]
     plan = create_plan(project["id"], PlanCreate(
@@ -3240,14 +3429,18 @@ def create_project_from_link(payload: QuickLinkCreate):
 
 
 @app.post("/api/projects/{project_id}/link-sources", status_code=201)
-def create_link_source(project_id: str, payload: LinkSourceCreate):
+def create_link_source(project_id: str, payload: LinkSourceCreate, response: Response, force: bool = False):
     project_or_404(project_id)
     url, fetched_title, text = read_link_article(payload.url)
-    return save_text_source(project_id, payload.title.strip() or fetched_title or "网页文章", text, url)
+    result = save_text_source(project_id, payload.title.strip() or fetched_title or "网页文章", text, url, check_duplicate=not force)
+    if result.get("duplicate"):
+        if response is not None:
+            response.status_code = 200  # 重复导入不新建，返回已有材料信息
+    return result
 
 
 @app.post("/api/projects/{project_id}/documents", status_code=201)
-async def upload_document(project_id: str, file: UploadFile = File(...)):
+async def upload_document(project_id: str, response: Response, file: UploadFile = File(...), force: bool = False):
     project_or_404(project_id)
     original_name = file.filename or "未命名材料"
     suffix = Path(original_name).suffix.lower()
@@ -3269,12 +3462,22 @@ async def upload_document(project_id: str, file: UploadFile = File(...)):
     for heading in structure.get("headings", []):
         if heading.get("id") in id_mapping:
             heading["id"] = id_mapping[heading["id"]]
+    fingerprint = content_fingerprint("\n".join(str(block.get("text") or "") for block in blocks))
+    if not force:
+        with db() as conn:
+            duplicate = find_duplicate_source(conn, project_id, fingerprint)
+        if duplicate is not None:
+            # 重复文件不入库：删除刚落盘的临时副本，返回已有材料信息。
+            stored_path.unlink(missing_ok=True)
+            if response is not None:
+                response.status_code = 200
+            return {"duplicate": True, "existing_project_id": duplicate["project_id"], "existing_document_id": duplicate["id"], "existing_name": duplicate["original_name"]}
     timestamp = now_iso()
     conn = db()
     conn.execute(
-        """INSERT INTO source_documents (id, project_id, original_name, stored_path, file_hash, file_size, file_type, paragraph_count, block_count, structure_json, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (document_id, project_id, original_name, str(stored_path), digest, stored_path.stat().st_size, suffix[1:], structure["paragraph_count"], len(blocks), json.dumps(structure, ensure_ascii=False), timestamp),
+        """INSERT INTO source_documents (id, project_id, original_name, stored_path, file_hash, file_size, file_type, paragraph_count, block_count, structure_json, content_fingerprint, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (document_id, project_id, original_name, str(stored_path), digest, stored_path.stat().st_size, suffix[1:], structure["paragraph_count"], len(blocks), json.dumps(structure, ensure_ascii=False), fingerprint, timestamp),
     )
     conn.executemany(
         """INSERT INTO source_blocks (id, document_id, sequence_no, heading_path, heading_level, kind, text, source_locator, created_at)
@@ -3288,12 +3491,45 @@ async def upload_document(project_id: str, file: UploadFile = File(...)):
 
 
 @app.post("/api/projects/{project_id}/text-sources", status_code=201)
-def create_text_source(project_id: str, payload: TextSourceCreate):
-    return save_text_source(project_id, payload.title, payload.content, payload.source_url)
+def create_text_source(project_id: str, payload: TextSourceCreate, response: Response, force: bool = False):
+    result = save_text_source(project_id, payload.title, payload.content, payload.source_url, check_duplicate=not force)
+    if result.get("duplicate"):
+        if response is not None:
+            response.status_code = 200  # 重复导入不新建，返回已有材料信息
+    return result
 
 
-def save_text_source(project_id: str, title: str, content: str, source_url: str = "") -> dict:
+def content_fingerprint(text: str) -> str:
+    """正文指纹：把连续空白合并为一个空格后取 SHA-256，用于同项目重复导入检测。"""
+    normalized = re.sub(r"\s+", " ", str(text or "")).strip()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def find_duplicate_source(conn: sqlite3.Connection, project_id: str, fingerprint: str = "", source_url: str = "") -> sqlite3.Row | None:
+    """在同项目内查找重复材料：正文指纹一致，或来源链接去首尾空白后完全相同。"""
+    url = (source_url or "").strip()
+    if not fingerprint and not url:
+        return None
+    rows = conn.execute(
+        "SELECT id, project_id, original_name, content_fingerprint, source_url FROM source_documents WHERE project_id = ?",
+        (project_id,),
+    ).fetchall()
+    for row in rows:
+        if fingerprint and row["content_fingerprint"] and row["content_fingerprint"] == fingerprint:
+            return row
+        if url and (row["source_url"] or "").strip() == url:
+            return row
+    return None
+
+
+def save_text_source(project_id: str, title: str, content: str, source_url: str = "", check_duplicate: bool = True) -> dict:
     project_or_404(project_id)
+    fingerprint = content_fingerprint(content)
+    if check_duplicate:
+        with db() as conn:
+            duplicate = find_duplicate_source(conn, project_id, fingerprint, source_url)
+        if duplicate is not None:
+            return {"duplicate": True, "existing_project_id": duplicate["project_id"], "existing_document_id": duplicate["id"], "existing_name": duplicate["original_name"]}
     document_id = str(uuid.uuid4())
     source_dir = PROJECTS_DIR / project_id / "sources"
     source_dir.mkdir(parents=True, exist_ok=True)
@@ -3308,9 +3544,9 @@ def save_text_source(project_id: str, title: str, content: str, source_url: str 
     timestamp = now_iso()
     conn = db()
     conn.execute(
-        """INSERT INTO source_documents (id, project_id, original_name, stored_path, file_hash, file_size, file_type, paragraph_count, block_count, structure_json, source_url, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, 'text', ?, ?, ?, ?, ?)""",
-        (document_id, project_id, title.strip(), str(stored_path), digest, len(source_text.encode("utf-8")), structure["paragraph_count"], len(blocks), json.dumps(structure, ensure_ascii=False), source_url.strip(), timestamp),
+        """INSERT INTO source_documents (id, project_id, original_name, stored_path, file_hash, file_size, file_type, paragraph_count, block_count, structure_json, source_url, content_fingerprint, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, 'text', ?, ?, ?, ?, ?, ?)""",
+        (document_id, project_id, title.strip(), str(stored_path), digest, len(source_text.encode("utf-8")), structure["paragraph_count"], len(blocks), json.dumps(structure, ensure_ascii=False), source_url.strip(), fingerprint, timestamp),
     )
     conn.executemany(
         """INSERT INTO source_blocks (id, document_id, sequence_no, heading_path, heading_level, kind, text, source_locator, created_at)
@@ -3740,13 +3976,15 @@ def create_plan(project_id: str, payload: PlanCreate):
     selected_heading_ids = list(payload.selected_heading_ids)
     custom_questions: dict[str, str] = {}
     custom_titles: dict[str, str] = {}
+    custom_reasons: dict[str, str] = {}
     split_mode_used = "rules"
     if payload.auto_split and payload.split_mode == "ai" and not selected_heading_ids:
         try:
-            proposal, ai_titles = ai_chapter_proposal(blocks, payload.feedback)
+            proposal, ai_titles, ai_reasons = ai_chapter_proposal(blocks, payload.feedback)
             selected_heading_ids = [heading_id for heading_id, _ in proposal]
             custom_questions = dict(proposal)
             custom_titles = ai_titles
+            custom_reasons = dict(ai_reasons)
             split_mode_used = "ai"
         except HTTPException:
             raise  # 模型未配置或服务异常时直接告知用户，不静默降级
@@ -3761,6 +3999,8 @@ def create_plan(project_id: str, payload: PlanCreate):
         if ai_title:
             prefix = re.match(r"^(第\d+章\s*·\s*)(.*)$", chapter["title"])
             chapter["title"] = (prefix.group(1) + ai_title) if prefix else ai_title
+        # AI 分章理由随章节方案持久化；模型未给理由时保持空串，兼容旧输出。
+        chapter["reason"] = custom_reasons.get(chapter.get("source_heading_id", ""), "")
     include_audio = bool(project.get("audio_enabled")) and bool(payload.include_audio)
     plan_id = str(uuid.uuid4())
     timestamp = now_iso()
@@ -4057,8 +4297,30 @@ def create_chatgpt_handoff(project_id: str, payload: ChatGPTAppHandoffRequest):
     }
 
 
+def find_reusable_outline(project_id: str, payload: NarrativeOutlineRequest) -> sqlite3.Row | None:
+    """同项目内查找参数完全一致且仍在使用中的大纲，避免重复调用模型生成同样的结构。"""
+    with db() as conn:
+        candidates = conn.execute(
+            "SELECT * FROM narrative_outlines WHERE project_id = ? AND document_id = ? AND status IN ('draft', 'confirmed') ORDER BY updated_at DESC",
+            (project_id, payload.document_id),
+        ).fetchall()
+    block_ids = sorted(payload.source_block_ids)
+    for candidate in candidates:
+        if sorted(parse_json(candidate["source_block_ids_json"], [])) != block_ids:
+            continue
+        outline = parse_json(candidate["outline_json"], {})
+        if (outline.get("target_words") or None) != (payload.target_words or None):
+            continue
+        if outline.get("transform_mode") != payload.transform_mode:
+            continue
+        if candidate["style_profile"] != payload.style_profile or candidate["audience"] != payload.audience:
+            continue
+        return candidate
+    return None
+
+
 @app.post("/api/projects/{project_id}/narrative-outlines", status_code=201)
-def create_narrative_outline_route(project_id: str, payload: NarrativeOutlineRequest):
+def create_narrative_outline_route(project_id: str, payload: NarrativeOutlineRequest, response: Response):
     project = project_or_404(project_id)
     require_external_verification(project)
     conn = db()
@@ -4086,6 +4348,22 @@ def create_narrative_outline_route(project_id: str, payload: NarrativeOutlineReq
             if not block["source_url"]:
                 raise HTTPException(400, "补充资料必须登记公开来源链接。")
             valid_public_url(block["source_url"])
+    if payload.allow_reuse and not payload.revision_of:
+        reused = find_reusable_outline(project_id, payload)
+        if reused is not None:
+            stored_outline = parse_json(reused["outline_json"], {})
+            if response is not None:
+                response.status_code = 200  # 命中同参数大纲：直接复用已有记录，不新建
+            return {
+                "id": reused["id"], "project_id": reused["project_id"], "document_id": reused["document_id"],
+                "title": reused["title"], "audience": reused["audience"], "style_profile": reused["style_profile"],
+                "target_length": reused["target_length"],
+                "transform_mode": stored_outline.get("transform_mode", payload.transform_mode),
+                "verification_mode": stored_outline.get("verification_mode", payload.verification_mode),
+                "scenario": stored_outline.get("scenario", payload.scenario),
+                "target_duration": stored_outline.get("target_duration", payload.target_duration),
+                "status": reused["status"], "outline": stored_outline, "reused": True,
+            }
     previous_outline = None
     if payload.revision_of:
         with db() as conn:
@@ -4178,7 +4456,14 @@ def confirm_narrative_outline(outline_id: str, payload: NarrativeOutlineConfirm)
 
 @app.get("/api/narrative-outlines/{outline_id}/progress")
 def narrative_generation_progress(outline_id: str):
-    return GENERATION_PROGRESS.get(outline_id, {"status": "idle", "total": 0, "current": 0, "heading": ""})
+    """生成进度：优先读持久化的生成任务，旧进程的内存进度作为兜底。"""
+    with db() as conn:
+        job = conn.execute("SELECT status, total, current, heading, message FROM generation_jobs WHERE outline_id = ?", (outline_id,)).fetchone()
+    if job is not None:
+        return {"status": job["status"], "total": job["total"], "current": job["current"], "heading": job["heading"], "message": job["message"]}
+    progress = dict(GENERATION_PROGRESS.get(outline_id, {"status": "idle", "total": 0, "current": 0, "heading": ""}))
+    progress.setdefault("message", "")
+    return progress
 
 
 @app.post("/api/narrative-outlines/{outline_id}/contents", status_code=201)
@@ -4187,7 +4472,9 @@ def generate_narrative_content(outline_id: str, background: bool = False):
         # 长篇逐节生成可能超过 20 分钟，内嵌 WebView 会捾断长时间无响应的连接；
         # 后台线程生成 + 前端轮询 progress，POST 立即返回。
         current = GENERATION_PROGRESS.get(outline_id, {})
-        if current.get("status") == "running":
+        with db() as conn:
+            job = conn.execute("SELECT status FROM generation_jobs WHERE outline_id = ?", (outline_id,)).fetchone()
+        if current.get("status") == "running" or (job is not None and job["status"] == "running"):
             raise HTTPException(409, "这份大纲正在生成中，请等当前任务完成后再试。")
         threading.Thread(target=_generate_narrative_content_job, args=(outline_id,), daemon=True).start()
         return {"status": "generating", "outline_id": outline_id}
@@ -4221,18 +4508,68 @@ def _generate_narrative_content_impl(outline_id: str):
     project = project_or_404(row["project_id"])
     preferences = project_preferences(project)
     outline.update({"minimum_output_mode": preferences["minimum_output_mode"], "minimum_output_ratio": preferences["minimum_output_ratio"]})
-    markdown, section_sources, model_metadata = generate_narrative_markdown(outline, blocks, row["audience"], row["style_profile"], outline.get("transform_mode", preferences["transform_mode"]), preferences["scenario"], max(1, round(outline.get("target_total_words", 2400) / 240)), outline.get("web_research_mode", preferences["web_research_mode"]), progress_key=outline_id, reviewer_guidance=build_reviewer_guidance(row["project_id"]))
-    content_id = str(uuid.uuid4())
+    # 大纲内容规范化后取哈希：哈希一致且任务未完成时续作，否则从头重生成。
+    outline_hash = hashlib.sha256(json.dumps(outline, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+    with db() as conn:
+        job = conn.execute("SELECT * FROM generation_jobs WHERE outline_id = ?", (outline_id,)).fetchone()
+    resume = job is not None and job["status"] in ("running", "interrupted") and job["outline_hash"] == outline_hash
+    completed_sections: dict[str, str] = {}
+    if resume:
+        loaded = parse_json(job["sections_json"], {})
+        if isinstance(loaded, dict):
+            completed_sections = {str(key): str(value) for key, value in loaded.items() if isinstance(value, str) and value.strip()}
+    total = len(outline["sections"])
     timestamp = now_iso()
-    conn = db()
-    conn.execute(
-        """INSERT INTO narrative_contents (id, outline_id, project_id, document_id, title, markdown, section_sources_json, model_json, status, review_note, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending_review', '', ?, ?)""",
-        (content_id, outline_id, row["project_id"], row["document_id"], outline["title"], markdown, json.dumps(section_sources, ensure_ascii=False), json.dumps(model_metadata, ensure_ascii=False), timestamp, timestamp),
-    )
-    conn.execute("UPDATE projects SET updated_at = ? WHERE id = ?", (timestamp, row["project_id"]))
-    conn.commit()
-    conn.close()
+    with db() as conn:
+        if resume:
+            conn.execute(
+                "UPDATE generation_jobs SET status = 'running', total = ?, current = ?, heading = '', message = '', sections_json = ?, outline_hash = ?, updated_at = ? WHERE outline_id = ?",
+                (total, sum(1 for section in outline["sections"] if section["id"] in completed_sections), json.dumps(completed_sections, ensure_ascii=False), outline_hash, timestamp, outline_id),
+            )
+        else:
+            conn.execute("DELETE FROM generation_jobs WHERE outline_id = ?", (outline_id,))
+            conn.execute(
+                "INSERT INTO generation_jobs (outline_id, status, total, current, heading, message, sections_json, outline_hash, created_at, updated_at) VALUES (?, 'running', ?, 0, '', '', '{}', ?, ?, ?)",
+                (outline_id, total, outline_hash, timestamp, timestamp),
+            )
+
+    def record_section(section_id: str, text: str, current: int, heading: str) -> None:
+        """每节生成完立即写穿数据库：应用重启或失败后可从已完成的小节继续。"""
+        completed_sections[section_id] = text
+        stamp = now_iso()
+        with db() as conn:
+            conn.execute("UPDATE generation_jobs SET sections_json = ?, current = ?, heading = ?, updated_at = ? WHERE outline_id = ?",
+                (json.dumps(completed_sections, ensure_ascii=False), current, heading, stamp, outline_id),
+            )
+        GENERATION_PROGRESS[outline_id] = {"status": "running", "total": total, "current": current, "heading": heading}
+
+    def mark_interrupted(message: str) -> None:
+        with db() as conn:
+            conn.execute("UPDATE generation_jobs SET status = 'interrupted', message = ?, updated_at = ? WHERE outline_id = ?",
+                (message, now_iso(), outline_id),
+            )
+
+    try:
+        markdown, section_sources, model_metadata = generate_narrative_markdown(outline, blocks, row["audience"], row["style_profile"], outline.get("transform_mode", preferences["transform_mode"]), preferences["scenario"], max(1, round(outline.get("target_total_words", 2400) / 240)), outline.get("web_research_mode", preferences["web_research_mode"]), progress_key=outline_id, reviewer_guidance=build_reviewer_guidance(row["project_id"]), existing_sections=completed_sections, on_section_done=record_section)
+        content_id = str(uuid.uuid4())
+        timestamp = now_iso()
+        conn = db()
+        conn.execute(
+            """INSERT INTO narrative_contents (id, outline_id, project_id, document_id, title, markdown, section_sources_json, model_json, status, review_note, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending_review', '', ?, ?)""",
+            (content_id, outline_id, row["project_id"], row["document_id"], outline["title"], markdown, json.dumps(section_sources, ensure_ascii=False), json.dumps(model_metadata, ensure_ascii=False), timestamp, timestamp),
+        )
+        conn.execute("UPDATE projects SET updated_at = ? WHERE id = ?", (timestamp, row["project_id"]))
+        conn.commit()
+        conn.close()
+    except HTTPException as error:
+        mark_interrupted(str(error.detail))
+        raise
+    except Exception as error:  # 后台线程里的意外异常也要落库，否则前端永远卡在 running
+        mark_interrupted("生成失败：" + str(error))
+        raise
+    with db() as conn:
+        conn.execute("UPDATE generation_jobs SET status = 'done', current = ?, heading = '', message = '', updated_at = ? WHERE outline_id = ?", (total, now_iso(), outline_id))
     return {"id": content_id, "outline_id": outline_id, "title": outline["title"], "markdown": markdown, "section_sources": section_sources, "model": model_metadata, "status": "pending_review", "created_at": timestamp}
 
 
@@ -4271,6 +4608,89 @@ def find_narrative_chapter(content, section_id: str) -> dict:
     if chapter is None:
         raise HTTPException(404, "未找到这章正文，请刷新后重试。")
     return chapter
+
+
+# 事实核对只做确定性规则匹配：日期、数字、法规名和条款号，不调用模型。
+FACT_PATTERNS: list[tuple[str, "re.Pattern[str]"]] = [
+    ("date", re.compile(r"\d{4}年\d{1,2}月\d{1,2}日|\d{4}-\d{1,2}-\d{1,2}|\d{4}年")),
+    ("number", re.compile(r"\d+(?:\.\d+)?%|\d+(?:\.\d+)?(?:万元|亿元|亿美元|美元|欧元|元)")),
+    ("law", re.compile(r"《[^《》]{2,40}》")),
+    ("article", re.compile(r"第[一二三四五六七八九十百0-9]+条")),
+]
+
+
+def extract_source_facts(blocks: list[dict]) -> list[dict]:
+    """从材料块中按确定性规则提取关键事实；同文本去重留第一处，按出现顺序，上限 200 项。"""
+    facts: list[dict] = []
+    seen: set[str] = set()
+    for block in blocks:
+        text = str(block.get("text") or "")
+        matches: list[tuple[int, str, str]] = []
+        for kind, pattern in FACT_PATTERNS:
+            for match in pattern.finditer(text):
+                matches.append((match.start(), kind, match.group(0)))
+        matches.sort(key=lambda item: item[0])
+        for _start, kind, fact_text in matches:
+            if fact_text in seen:
+                continue
+            seen.add(fact_text)
+            facts.append({
+                "text": fact_text,
+                "kind": kind,
+                "source_block_id": str(block.get("id") or ""),
+                "source_locator": str(block.get("source_locator") or ""),
+            })
+            if len(facts) >= 200:
+                return facts
+    return facts
+
+
+_FULL_WIDTH_DIGIT_TABLE = str.maketrans("０１２３４５６７８９％", "0123456789%")
+
+
+def normalize_fact_text(value: str) -> str:
+    """事实匹配前的规整：全角数字/百分号转半角并去掉全部空白，避免排版差异造成误报。"""
+    return re.sub(r"\s+", "", str(value or "").translate(_FULL_WIDTH_DIGIT_TABLE))
+
+
+@app.post("/api/narrative-contents/{content_id}/fact-check")
+def fact_check_narrative_content(content_id: str):
+    """核对讲稿是否保留了材料中的关键事实；实时计算，不落库。"""
+    with db() as conn:
+        row = conn.execute("SELECT * FROM narrative_contents WHERE id = ?", (content_id,)).fetchone()
+        outline_row = conn.execute("SELECT source_block_ids_json FROM narrative_outlines WHERE id = ?", (row["outline_id"],)).fetchone() if row else None
+    if row is None:
+        raise HTTPException(status_code=404, detail="讲稿不存在。")
+    chapters = narrative_chapters(dict(row))
+    source_ids: list[str] = []
+    for item in parse_json(row["section_sources_json"], []):
+        for block_id in (item.get("source_block_ids", []) if isinstance(item, dict) else []):
+            if block_id and block_id not in source_ids:
+                source_ids.append(block_id)
+    for block_id in parse_json(outline_row["source_block_ids_json"], []) if outline_row else []:
+        if block_id and block_id not in source_ids:
+            source_ids.append(block_id)
+    blocks = read_project_blocks(row["project_id"], source_ids)
+    chapter_bodies = [(chapter["id"], chapter["heading"], normalize_fact_text(chapter["body"])) for chapter in chapters]
+    results: list[dict] = []
+    preserved_count = 0
+    for fact in extract_source_facts(blocks):
+        normalized = normalize_fact_text(fact["text"])
+        found_in = [
+            {"section_id": section_id, "heading": heading}
+            for section_id, heading, body in chapter_bodies
+            if normalized and normalized in body
+        ]
+        status = "preserved" if found_in else "missing"
+        if status == "preserved":
+            preserved_count += 1
+        results.append({**fact, "found_in": found_in, "status": status})
+    missing_first = [item for item in results if item["status"] == "missing"] + [item for item in results if item["status"] == "preserved"]
+    return {
+        "generated_at": now_iso(),
+        "facts": missing_first,
+        "summary": {"total": len(results), "preserved": preserved_count, "missing": len(results) - preserved_count},
+    }
 
 
 @app.post("/api/narrative-contents/{content_id}/sections/{section_id}/revision")
@@ -4999,6 +5419,23 @@ def update_task(task_id: str, payload: TaskUpdate):
     return {"id": task_id, "status": payload.status, "owner": payload.owner, "due_date": payload.due_date, "updated_at": timestamp}
 
 
+@app.get("/api/usage/summary")
+def usage_summary():
+    """本地累计的模型 token 用量；从未记录时返回全 0。"""
+    with db() as conn:
+        row = conn.execute("SELECT setting_value FROM settings WHERE setting_key = 'usage_totals'").fetchone()
+    value = parse_json(row["setting_value"], {}) if row else {}
+    try:
+        return {
+            "calls": int(value.get("calls") or 0),
+            "prompt_tokens": int(value.get("prompt_tokens") or 0),
+            "completion_tokens": int(value.get("completion_tokens") or 0),
+            "updated_at": str(value.get("updated_at") or ""),
+        }
+    except (TypeError, ValueError):
+        return {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "updated_at": ""}
+
+
 @app.get("/api/settings/provider")
 def get_provider():
     conn = db()
@@ -5018,6 +5455,8 @@ def get_provider():
         value["tts_api_key"] = "已配置（本地不回显）"
     if value.get("asr_api_key"):
         value["asr_api_key"] = "已配置（本地不回显）"
+    if "lan_share_enabled" not in value:
+        value["lan_share_enabled"] = True  # 旧版设置缺该字段时按默认开启处理
     if not value.get("provider_preset"):
         value["provider_preset"] = next((name for name, preset in MODEL_PRESETS.items() if name != "custom" and value.get("base_url") == preset["base_url"]), "openai")
     return value

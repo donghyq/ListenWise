@@ -1,4 +1,4 @@
-const appState = { projects: [], selectedProjectId: null, selectedProject: null, selectedDocument: null, activeTab: 'materials', activePlan: null, editingContentId: null, collectionFilter: '', shelfQuery: '', shelfSort: 'updated' };
+const appState = { projects: [], selectedProjectId: null, selectedProject: null, selectedDocument: null, activeTab: 'materials', activePlan: null, editingContentId: null, collectionFilter: '', shelfQuery: '', shelfSort: 'updated', notifications: [], factChecks: {} };
 let quickLinkPreview = null;
 const SCENARIOS = {
   daily_brief: { name: '晨间 / 晚间速听', description: '单篇资讯或收藏文章的短时精炼收听', transform: 'condense', verification: 'source_only', duration: 5, audio: true, audience: '个人学习', narrativeLabel: '速听讲稿' },
@@ -75,6 +75,92 @@ function showMessage(message, error = false) { const box = $('#workspace-message
   showMessage._timer = setTimeout(() => box.classList.add('hidden'), error ? 12000 : 4800); if (error) console.error('[声息]', message); }
 function setBusy(button, busy, label = '处理中…') { if (!button) return; if (busy) { if (!button.disabled) button.dataset.label = button.textContent; button.textContent = label; button.disabled = true; } else { button.textContent = button.dataset.label || button.textContent; button.disabled = false; } }
 
+/* ===== 通知中心：生成失败等需要回头处理的事件集中在这里，可重试、可删除；showMessage 保持即时提示职责不变。===== */
+function loadNotifications() {
+  try { appState.notifications = JSON.parse(localStorage.getItem('shengxi-notifications') || '[]') || []; }
+  catch (_) { appState.notifications = []; }
+  if (!Array.isArray(appState.notifications)) appState.notifications = [];
+}
+function saveNotifications() { try { localStorage.setItem('shengxi-notifications', JSON.stringify((appState.notifications || []).slice(0, 30))); } catch (_) { /* 存储不可用时仅保留本次会话内的通知 */ } }
+function pushNotification(message, retry = null) {
+  const list = appState.notifications ||= [];
+  const id = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : 'notify-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+  list.unshift({ id, ts: Date.now(), message: String(message || ''), error: true, retry: retry || undefined });
+  if (list.length > 30) list.length = 30;
+  saveNotifications();
+  updateNotificationBell();
+}
+function unreadNotificationCount() {
+  const readAt = Number(localStorage.getItem('shengxi-notifications-read') || 0);
+  return (appState.notifications || []).filter(item => (item.ts || 0) > readAt).length;
+}
+function updateNotificationBell() {
+  const dot = $('#bell-dot');
+  if (dot) dot.hidden = unreadNotificationCount() === 0;
+}
+function notificationTime(ts) {
+  try { return new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(ts || Date.now())); }
+  catch (_) { return ''; }
+}
+function renderNotificationPanel() {
+  $('#notification-panel')?.remove();
+  const items = appState.notifications || [];
+  const panel = document.createElement('div');
+  panel.id = 'notification-panel';
+  panel.className = 'notification-panel';
+  panel.innerHTML = '<div class="notification-head"><b>通知</b>' + (items.length ? '<button type="button" class="button button-quiet button-small" id="notification-clear">全部清空</button>' : '') + '</div>'
+    + (items.length
+      ? '<div class="notification-list">' + items.map(item => {
+        const idAttr = escapeHtml(item.id || '');
+        return '<div class="notification-item' + (item.error ? ' error' : '') + '"><div class="notification-main"><small>' + escapeHtml(notificationTime(item.ts)) + '</small><p>' + escapeHtml(item.message) + '</p></div><div class="notification-actions">'
+          + (item.retry ? '<button type="button" class="button button-outline button-small" data-notification-retry="' + idAttr + '">重试</button>' : '')
+          + '<button type="button" class="button button-quiet button-small" data-notification-delete="' + idAttr + '">删除</button></div></div>';
+      }).join('') + '</div>'
+      : '<p class="notification-empty">暂时没有通知。批量生成、讲稿写作或音频合成失败时，会在这里留下可重试的记录。</p>');
+  document.body.appendChild(panel);
+  $('#notification-clear', panel)?.addEventListener('click', () => { appState.notifications = []; saveNotifications(); updateNotificationBell(); renderNotificationPanel(); });
+  $$('[data-notification-retry]', panel).forEach(button => button.addEventListener('click', () => runNotificationRetry(button.dataset.notificationRetry)));
+  $$('[data-notification-delete]', panel).forEach(button => button.addEventListener('click', () => {
+    appState.notifications = (appState.notifications || []).filter(item => item.id !== button.dataset.notificationDelete);
+    saveNotifications(); updateNotificationBell(); renderNotificationPanel();
+  }));
+}
+function runNotificationRetry(id) {
+  const item = (appState.notifications || []).find(entry => entry.id === id);
+  if (!item?.retry) return;
+  const retry = item.retry;
+  $('#notification-panel')?.remove();
+  const contents = appState.selectedProject?.narrative_contents || [];
+  if (retry.type === 'batch_audio') {
+    const content = contents.find(entry => entry.id === retry.payload?.contentId);
+    if (!content) { showMessage('请先打开对应项目，再重试批量生成音频。', true); return; }
+    generateAllChapterAudio(content, $('#studio-generate-all'));
+  } else if (retry.type === 'narrative') {
+    if (!appState.selectedProject) { showMessage('请先打开对应项目，再重试讲稿生成。', true); return; }
+    generateNarrative(retry.payload?.outlineId, null);
+  } else if (retry.type === 'direct_audio') {
+    if (!appState.selectedProject) { showMessage('请先打开对应项目，再重试原文音频合成。', true); return; }
+    synthesizeAudio(retry.payload?.audioId, null);
+  } else if (retry.type === 'chapter_audio') {
+    const content = contents.find(entry => entry.id === retry.payload?.contentId);
+    const chapter = content?.chapters?.find(entry => entry.id === retry.payload?.sectionId);
+    if (!content || !chapter) { showMessage('请先打开对应项目，再重试本章音频。', true); return; }
+    retryChapterAudio(content, chapter, retry.payload);
+  }
+  appState.notifications = (appState.notifications || []).filter(entry => entry.id !== id);
+  saveNotifications(); updateNotificationBell();
+}
+async function retryChapterAudio(content, chapter, payload = null) {
+  try {
+    await updateChapterAudioFlow(content, chapter);
+    renderProjectDetail();
+    showMessage('本章音频已更新。');
+  } catch (error) {
+    pushNotification('本章「' + (chapter.heading || '') + '」音频更新失败：' + (error.message || '未知错误'), { type: 'chapter_audio', payload: payload || { contentId: content.id, sectionId: chapter.id } });
+    showMessage('本章音频更新失败：' + (error.message || '未知错误'), true);
+  }
+}
+
 // 让大纲里的多行文本框按内容自适应高度（关键点经常不止两三行）
 function autoGrowTextarea(textarea) {
   if (!textarea || textarea.disabled) return;
@@ -149,6 +235,38 @@ function projectDurationMeta(project, direct) {
   return '';
 }
 
+/* ===== 书架顶部「继续收听」卡：优先推有 confirmed 讲稿且还没学完的项目，其次是有成品音频的。===== */
+function continueListeningCandidate() {
+  const projects = appState.projects || [];
+  const learning = projects.filter(project => project.production_stage?.has_confirmed_content
+    && (project.learning_progress?.total || 0) > (project.learning_progress?.done || 0));
+  const readyAudio = projects.filter(project => project.production_stage?.has_ready_audio);
+  const pool = learning.length ? learning : readyAudio;
+  if (!pool.length) return null;
+  return pool.slice().sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')))[0];
+}
+
+function renderContinueHero() {
+  const candidate = continueListeningCandidate();
+  if (candidate) {
+    const progress = candidate.learning_progress || { done: 0, total: 0 };
+    const progressText = progress.total ? '已学 ' + progress.done + ' / ' + progress.total + ' 节'
+      : (candidate.production_stage?.has_ready_audio ? '音频已就绪，戴上耳机接着听。' : '讲稿已确认，可以继续推进。');
+    return '<section class="continue-hero"><div class="continue-hero-copy"><p class="eyebrow">继续收听</p><h3>' + escapeHtml(candidate.name) + '</h3><p class="continue-hero-meta">' + escapeHtml(progressText) + '</p></div>'
+      + '<button type="button" class="button button-primary" data-continue-open="' + candidate.id + '">继续收听 →</button></section>';
+  }
+  return '<section class="continue-hero continue-hero-empty"><div class="continue-hero-copy"><p class="eyebrow">从一篇文字开始</p><h3>今天想把哪篇听完？</h3><p class="continue-hero-meta">粘贴一篇公众号文章或上传文件，声息会拆成路上能听完的小节。</p></div>'
+    + '<button type="button" class="button button-primary" data-continue-start>从一篇文字开始</button></section>';
+}
+
+async function openProjectTab(projectId, tab) {
+  await openProject(projectId);
+  if (tab && appState.selectedProjectId === projectId && !$('#project-detail')?.classList.contains('hidden')) {
+    appState.activeTab = tab;
+    renderProjectDetail();
+  }
+}
+
 function renderProjectList() {
   const list = $('#project-list');
   if (!document.body.classList.contains('in-shelf')) return;
@@ -192,7 +310,13 @@ function renderProjectList() {
     });
     return;
   }
-  list.innerHTML = visible.map(project => { const scenario = SCENARIOS[project.scenario] || SCENARIOS.topic_learning; const progress = project.learning_progress || { done: 0, total: 0 }; const percent = progress.total ? Math.round(progress.done / progress.total * 100) : 0; const progressHtml = progress.total ? '<div class="card-progress"><div class="card-progress-bar"><i style="width:' + percent + '%"></i></div><span>已学 ' + progress.done + ' / ' + progress.total + ' 节</span></div>' : ''; const tag = (project.collection || '').trim(); const tagBtn = '<button type="button" class="card-tag-btn' + (tag ? '' : ' untagged') + '" data-tag-project="' + project.id + '">' + (tag ? escapeHtml(tag) : '＋ 收藏夹') + '</button>'; const status = projectCardStatus(project, progress); const direct = !!project.production_stage?.has_direct_audio_script; const durationMeta = projectDurationMeta(project, direct); return '<div class="project-card" role="button" tabindex="0" data-project-id="' + project.id + '"><div class="card-cover"><img src="' + coverForProject(project.id) + '" alt="" loading="lazy" />' + status + '</div><div class="project-card-top"><span class="tag">' + escapeHtml(direct ? '原文朗读' : scenario.name) + '</span><small>' + formatDate(project.updated_at) + '</small><button type="button" class="card-rename-btn" data-rename-project="' + project.id + '" title="重命名项目" aria-label="重命名项目">✎</button></div><h3>' + escapeHtml(project.name) + '</h3><p>' + escapeHtml(direct ? '保留文章内容，直接生成音频' : project.description || project.client_name || scenario.name) + '</p>' + progressHtml + '<div class="meta">' + tagBtn + '<span>' + project.document_count + ' 份素材</span><span>' + (project.verification_mode === 'source_only' ? '仅依据原文' : project.task_count + ' 项核验') + '</span>' + (durationMeta ? '<span>' + escapeHtml(durationMeta) + '</span>' : '') + '</div></div>'; }).join('');
+  list.innerHTML = renderContinueHero() + visible.map(project => { const scenario = SCENARIOS[project.scenario] || SCENARIOS.topic_learning; const progress = project.learning_progress || { done: 0, total: 0 }; const percent = progress.total ? Math.round(progress.done / progress.total * 100) : 0; const progressHtml = progress.total ? '<div class="card-progress"><div class="card-progress-bar"><i style="width:' + percent + '%"></i></div><span>已学 ' + progress.done + ' / ' + progress.total + ' 节</span></div>' : ''; const tag = (project.collection || '').trim(); const tagBtn = '<button type="button" class="card-tag-btn' + (tag ? '' : ' untagged') + '" data-tag-project="' + project.id + '">' + (tag ? escapeHtml(tag) : '＋ 收藏夹') + '</button>'; const status = projectCardStatus(project, progress); const direct = !!project.production_stage?.has_direct_audio_script; const durationMeta = projectDurationMeta(project, direct); return '<div class="project-card" role="button" tabindex="0" data-project-id="' + project.id + '"><div class="card-cover"><img src="' + coverForProject(project.id) + '" alt="" loading="lazy" />' + status + '</div><div class="project-card-top"><span class="tag">' + escapeHtml(direct ? '原文朗读' : scenario.name) + '</span><small>' + formatDate(project.updated_at) + '</small><button type="button" class="card-rename-btn" data-rename-project="' + project.id + '" title="重命名项目" aria-label="重命名项目">✎</button></div><h3>' + escapeHtml(project.name) + '</h3><p>' + escapeHtml(direct ? '保留文章内容，直接生成音频' : project.description || project.client_name || scenario.name) + '</p>' + progressHtml + '<div class="meta">' + tagBtn + '<span>' + project.document_count + ' 份素材</span><span>' + (project.verification_mode === 'source_only' ? '仅依据原文' : project.task_count + ' 项核验') + '</span>' + (durationMeta ? '<span>' + escapeHtml(durationMeta) + '</span>' : '') + '</div></div>'; }).join('');
+  $$('[data-continue-open]', list).forEach(button => button.addEventListener('click', event => { event.stopPropagation(); openProjectTab(button.dataset.continueOpen, 'audio'); }));
+  $$('[data-continue-start]', list).forEach(button => button.addEventListener('click', () => {
+    const input = $('#quick-link-input');
+    input?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    input?.focus({ preventScroll: true });
+  }));
   $$('.project-card', list).forEach(card => {
     card.addEventListener('click', () => openProject(card.dataset.projectId));
     card.addEventListener('keydown', event => {
@@ -343,6 +467,14 @@ function bindQuickImport() {
       setBusy(button, true, '正在加入书架…');
       status.textContent = '正在保存文章并解析结构…';
       const result = await request('/api/projects/from-link', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: quickLinkPreview.url, scenario, transform_mode: transformMode }) });
+      if (result?.duplicate && result.existing_project_id) {
+        input.value = '';
+        resetQuickLinkPreview();
+        await loadProjects();
+        await openProject(result.existing_project_id);
+        showMessage('书架中已有相同内容：' + (result.existing_name || '同名文章') + '，已为你打开原项目。');
+        return;
+      }
       applyLastCollection(result.project_id);
       input.value = '';
       resetQuickLinkPreview();
@@ -687,7 +819,9 @@ function renderMaterialsPanel() {
 
 async function uploadDocument(file) {
   if (!file) return; const upload = $('#document-upload');
-  try { setBusy(upload, true, ''); showMessage('正在解析“' + file.name + '”，请稍候…'); const form = new FormData(); form.append('file', file); const result = await request('/api/projects/' + appState.selectedProject.project.id + '/documents', { method: 'POST', body: form }); appState.selectedProject = await request('/api/projects/' + appState.selectedProject.project.id); appState.selectedDocument = { ...result, blocks: null }; await loadProjects(); renderProjectDetail(); await viewDocumentMap(result.id); showMessage('已完成解析：' + result.paragraph_count + ' 个段落、' + result.block_count + ' 个材料块。'); } catch (error) { showMessage(error.message, true); } finally { if (upload) upload.disabled = false; }
+  try { setBusy(upload, true, ''); showMessage('正在解析“' + file.name + '”，请稍候…'); const form = new FormData(); form.append('file', file); const result = await request('/api/projects/' + appState.selectedProject.project.id + '/documents', { method: 'POST', body: form });
+    if (result?.duplicate) { appState.selectedProject = await request('/api/projects/' + appState.selectedProject.project.id); await loadProjects(); renderProjectDetail(); showMessage('本项目已导入过相同内容，未重复添加。'); return; }
+    appState.selectedProject = await request('/api/projects/' + appState.selectedProject.project.id); appState.selectedDocument = { ...result, blocks: null }; await loadProjects(); renderProjectDetail(); await viewDocumentMap(result.id); showMessage('已完成解析：' + result.paragraph_count + ' 个段落、' + result.block_count + ' 个材料块。'); } catch (error) { showMessage(error.message, true); } finally { if (upload) upload.disabled = false; }
 }
 
 async function createTextSource() {
@@ -695,7 +829,9 @@ async function createTextSource() {
   const title = $('#text-source-title').value.trim();
   const content = $('#text-source-content').value.trim();
   if (!title || content.length < 20) { showMessage('请填写素材标题，并粘贴至少 20 个字符的正文。', true); return; }
-  try { setBusy(button, true, '保存中…'); const result = await request('/api/projects/' + appState.selectedProject.project.id + '/text-sources', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title, content, source_url: $('#text-source-url').value.trim() }) }); appState.selectedProject = await request('/api/projects/' + appState.selectedProject.project.id); appState.selectedDocument = { ...result, blocks: null }; await loadProjects(); renderProjectDetail(); await viewDocumentMap(result.id); showMessage('文字素材已保存并完成结构解析。'); } catch (error) { showMessage(error.message, true); } finally { setBusy(button, false); }
+  try { setBusy(button, true, '保存中…'); const result = await request('/api/projects/' + appState.selectedProject.project.id + '/text-sources', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title, content, source_url: $('#text-source-url').value.trim() }) });
+    if (result?.duplicate) { appState.selectedProject = await request('/api/projects/' + appState.selectedProject.project.id); await loadProjects(); renderProjectDetail(); showMessage('本项目已导入过相同内容，未重复添加。'); return; }
+    appState.selectedProject = await request('/api/projects/' + appState.selectedProject.project.id); appState.selectedDocument = { ...result, blocks: null }; await loadProjects(); renderProjectDetail(); await viewDocumentMap(result.id); showMessage('文字素材已保存并完成结构解析。'); } catch (error) { showMessage(error.message, true); } finally { setBusy(button, false); }
 }
 
 async function aiParseDocument(documentId, button, feedback = '') {
@@ -728,6 +864,7 @@ async function importWebSource(item, button) {
   try {
     setBusy(button, true, '读取网页…');
     const result = await request('/api/projects/' + appState.selectedProject.project.id + '/web-sources', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({title:item.title, url:item.url})});
+    if (result?.duplicate) { appState.selectedProject = await request('/api/projects/' + appState.selectedProject.project.id); await loadProjects(); renderProjectDetail(); showMessage('本项目已导入过相同内容，未重复添加。'); return; }
     appState.selectedProject = await request('/api/projects/' + appState.selectedProject.project.id); appState.selectedDocument = {...result, blocks:null};
     await loadProjects(); renderProjectDetail(); await viewDocumentMap(result.id);
     showMessage('已导入公开网页并记录来源链接。请在主题地图中确认材料范围。');
@@ -787,9 +924,10 @@ async function fillProjectNameFromUrl() {
 }
 
 async function directDocumentAudio(documentId, button) {
+  let created = null;
   try {
     setBusy(button, true, '转音频中…');
-    const created = await request('/api/projects/' + appState.selectedProject.project.id + '/documents/' + documentId + '/direct-audio', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({}) });
+    created = await request('/api/projects/' + appState.selectedProject.project.id + '/documents/' + documentId + '/direct-audio', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({}) });
     // 合成需要一两分钟：先切到音频标签让用户看到卡片和脚本，再后台合成
     appState.activeTab = 'audio';
     appState.synthesizingAudio = created.id;
@@ -806,9 +944,10 @@ async function directDocumentAudio(documentId, button) {
     appState.selectedProject = await request('/api/projects/' + appState.selectedProject.project.id);
     renderProjectDetail();
     showMessage('原文音频已生成，可直接播放或导出。');
-  } catch (error) {
+} catch (error) {
 appState.synthesizingAudio = null;
 showMessage(error.message, true);
+if (created?.id) pushNotification('原文音频合成失败：' + (error.message || '未知错误'), { type: 'direct_audio', payload: { audioId: created.id } });
 if (appState.selectedProject) { // 失败也要刷新界面，避免「合成中…」残留
 try { appState.selectedProject = await request('/api/projects/' + appState.selectedProject.project.id); renderProjectDetail(); } catch (_) { /* 保持当前视图 */ }
 }
@@ -837,7 +976,7 @@ function formatChapterQuestion(chapter) {
   return q;
 }
 function renderChapters(chapters) {
-  return chapters.map(chapter => '<div class="chapter-row ' + (chapter.enabled === false ? 'disabled' : '') + '" data-chapter-id="' + escapeHtml(chapter.id) + '" data-source-blocks="' + escapeHtml(JSON.stringify(chapter.source_block_ids)) + '"><input class="chapter-enabled" type="checkbox" ' + (chapter.enabled !== false ? 'checked' : '') + '/><div><input class="chapter-title" type="text" value="' + escapeHtml(chapter.title) + '"/><small>' + escapeHtml(formatChapterQuestion(chapter)) + '</small><span class="source-count">' + chapter.source_block_ids.length + ' 个材料块</span></div><div class="chapter-row-actions"><button class="button button-outline button-small chapter-up" type="button" title="上移章节">↑</button><button class="button button-outline button-small chapter-down" type="button" title="下移章节">↓</button><button class="button button-outline button-small chapter-preview" type="button">查看依据</button></div></div>').join('');
+  return chapters.map(chapter => '<div class="chapter-row ' + (chapter.enabled === false ? 'disabled' : '') + '" data-chapter-id="' + escapeHtml(chapter.id) + '" data-source-blocks="' + escapeHtml(JSON.stringify(chapter.source_block_ids)) + '"><input class="chapter-enabled" type="checkbox" ' + (chapter.enabled !== false ? 'checked' : '') + '/><div><input class="chapter-title" type="text" value="' + escapeHtml(chapter.title) + '"/><small>' + escapeHtml(formatChapterQuestion(chapter)) + '</small>' + (chapter.reason ? '<span class="chapter-reason">AI 分章理由：' + escapeHtml(chapter.reason) + '</span>' : '') + '<span class="source-count">' + chapter.source_block_ids.length + ' 个材料块</span></div><div class="chapter-row-actions"><button class="button button-outline button-small chapter-up" type="button" title="上移章节">↑</button><button class="button button-outline button-small chapter-down" type="button" title="下移章节">↓</button><button class="button button-outline button-small chapter-preview" type="button">查看依据</button></div></div>').join('');
 }
 function bindChapterControls() {
   $$('.chapter-enabled').forEach(input => input.addEventListener('change', () => input.closest('.chapter-row').classList.toggle('disabled', !input.checked)));
@@ -1625,7 +1764,9 @@ async function createNarrativeOutline(options = {}) {
     const record = appState.selectedProject.narrative_outlines.find(item => item.id === outline.id) || outline;
     if (outlineArea) delete outlineArea.dataset.generating;
     renderNarrativeOutline(record);
-    showMessage(auto ? '已根据确认的章节自动生成写作大纲，可在下方检查调整。' : (scope === 'chapter' ? '已沿用你确认的章节结构。请检查并调整后再确认。' : '写作大纲已生成。请检查章节结构和材料范围。'));
+    showMessage(outline?.reused ? '材料与设置未变，已复用上次大纲。'
+      : auto ? '已根据确认的章节自动生成写作大纲，可在下方检查调整。'
+      : (scope === 'chapter' ? '已沿用你确认的章节结构。请检查并调整后再确认。' : '写作大纲已生成。请检查章节结构和材料范围。'));
     return record;
   } catch (error) {
     showMessage(error.message, true);
@@ -1689,6 +1830,7 @@ async function generateNarrative(outlineId, button) {
   } catch (error) {
     stopPoll();
     showMessage(error.message, true);
+    pushNotification('讲稿生成失败：' + (error.message || '未知错误'), { type: 'narrative', payload: { outlineId } });
     try { appState.selectedProject = await request('/api/projects/' + appState.selectedProject.project.id); renderProjectDetail(); } catch (_) { /* 保持当前视图 */ }
     return false;
   } finally {
@@ -2085,6 +2227,7 @@ async function generateAllChapterAudio(content, button) {
     appState.batchAudioRunning = false;
     appState.batchAudioCancel = false;
     renderProjectDetail();
+    if (failures.length) pushNotification('批量生成章节音频：' + failures.length + ' 章失败。' + failures.join('；'), { type: 'batch_audio', payload: { contentId: content.id } });
     if (cancelled) showMessage('已停止，完成 ' + completed + ' / ' + pending.length + ' 章' + (failures.length ? '；失败章节：' + failures.join('；') : '。'));
     else if (failures.length) showMessage('已完成 ' + completed + ' / ' + pending.length + ' 章；失败章节：' + failures.join('；') + '。可重新尝试未完成的章节。', true);
     else if (confirmed) showMessage('本次 ' + completed + ' 章音频已生成，点右侧章节即可连续收听。');
@@ -2292,6 +2435,26 @@ async function exportProject() { const button = $('#export-project'); try { setB
 async function deleteProject() { const project = appState.selectedProject?.project; if (!project) return; const confirmed = window.confirm('删除项目“' + project.name + '”？\n\n项目中的原始材料、章节方案、讲稿、音频和任务记录将从本机工作目录删除。已经导出的成果包不会删除。'); if (!confirmed) return; const button = $('#delete-project'); try { setBusy(button, true, '删除中…'); await request('/api/projects/' + project.id, { method: 'DELETE' }); appState.selectedProjectId = null; appState.selectedProject = null; appState.selectedDocument = null; appState.activePlan = null; $('#project-detail').classList.add('hidden'); $('#project-detail').innerHTML = ''; document.body.classList.remove('in-project'); await loadProjects(); showShelf(); showMessage('项目及本地派生音频已删除。'); } catch (error) { showMessage(error.message, true); } finally { if (button?.isConnected) setBusy(button, false); } }
 function showSourceOverlay(title, html) { const overlay = document.createElement('div'); overlay.className = 'source-modal'; overlay.innerHTML = '<div class="source-modal-card"><div class="source-modal-top"><div><p class="eyebrow">原始材料依据</p><h3>' + escapeHtml(title) + '</h3></div><button class="icon-button" aria-label="关闭">×</button></div><div>' + html + '</div></div>'; $('.icon-button', overlay).addEventListener('click', () => overlay.remove()); overlay.addEventListener('click', event => { if (event.target === overlay) overlay.remove(); }); document.body.appendChild(overlay); }
 
+/* 设置弹窗顶部的一次性用量摘要：接口未上线（404）时静默不显示，不影响设置流程。 */
+async function loadUsageSummary() {
+  const form = $('#settings-form');
+  if (!form) return;
+  try {
+    const usage = await request('/api/usage/summary');
+    const calls = Number(usage?.total_calls ?? usage?.calls ?? usage?.count ?? 0);
+    const inputTokens = Number(usage?.input_tokens ?? usage?.prompt_tokens ?? 0);
+    const outputTokens = Number(usage?.output_tokens ?? usage?.completion_tokens ?? 0);
+    let line = $('#usage-summary-line', form);
+    if (!line) {
+      line = document.createElement('p');
+      line.id = 'usage-summary-line';
+      line.className = 'usage-summary';
+      $('.dialog-header', form).after(line);
+    }
+    line.textContent = '本机累计调用 ' + calls.toLocaleString('zh-CN') + ' 次 · 输入 ' + inputTokens.toLocaleString('zh-CN') + ' tokens · 输出 ' + outputTokens.toLocaleString('zh-CN') + ' tokens';
+  } catch (_) { /* 新接口尚未上线时不显示这一行 */ }
+}
+
 function bindDialogs() {
   const settingsForm = $('#settings-form');
   if (settingsForm && !$('#settings-update')) {
@@ -2346,6 +2509,14 @@ function bindDialogs() {
       const sourceUrl = (body.source_url || '').trim();
       delete body.source_url;
       const project = await request('/api/projects', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+      if (project?.duplicate && project.existing_project_id) {
+        $('#project-dialog').close();
+        formEl.reset();
+        await loadProjects();
+        await openProject(project.existing_project_id);
+        showMessage('书架中已有相同内容：' + (project.existing_name || '同名文章') + '，已为你打开原项目。');
+        return;
+      }
       if (sourceUrl) {
         setBusy(submit, true, '正在抓取文章…');
         try {
@@ -2406,6 +2577,7 @@ function bindDialogs() {
       applyProviderPreset(form, false);
       $('#settings-dialog').showModal();
       checkForUpdates();
+      loadUsageSummary();
     } catch(error) {
       showMessage(error.message,true);
     }
@@ -2553,6 +2725,20 @@ async function boot() {
   bindDialogs();
   bindShelfControls();
   bindQuickImport();
+  loadNotifications();
+  updateNotificationBell();
+  $('#open-notifications')?.addEventListener('click', event => {
+    event.stopPropagation();
+    const panel = $('#notification-panel');
+    if (panel) { panel.remove(); return; }
+    renderNotificationPanel();
+    localStorage.setItem('shengxi-notifications-read', String(Date.now()));
+    updateNotificationBell();
+  });
+  document.addEventListener('click', event => {
+    const panel = $('#notification-panel');
+    if (panel && (!(event.target instanceof Element) || !event.target.closest('#notification-panel'))) panel.remove();
+  });
   checkModelConfigured();
   $('#listen-load-demo')?.addEventListener('click', prepareListenDemo);
   enhanceSelects();
@@ -2916,7 +3102,7 @@ function enhanceSelects(root) {
   });
 }
 
-document.addEventListener('click', event => { if (!event.target.closest('.select-box')) closeAllSelectBoxes(); });
+document.addEventListener('click', event => { if (!(event.target instanceof Element) || !event.target.closest('.select-box')) closeAllSelectBoxes(); });
 document.addEventListener('keydown', event => { if (event.key === 'Escape') closeAllSelectBoxes(); });
 
 window.addEventListener('beforeunload', event => {

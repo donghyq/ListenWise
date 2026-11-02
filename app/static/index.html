@@ -6,13 +6,14 @@
   <title>声息｜把没有时间读完的东西，带到路上</title>
   <link rel="icon" type="image/png" href="/icon-180.png" />
   <link rel="apple-touch-icon" href="/icon-180.png" />
-  <link rel="stylesheet" href="/styles.css?v=20261019-6" />
-  <link rel="stylesheet" href="/chapters.css?v=20261019-6" />
+  <link rel="stylesheet" href="/styles.css?v=20261102-1" />
+  <link rel="stylesheet" href="/chapters.css?v=20261102-1" />
 </head>
 <body>
   <header class="nav shell">
     <a class="brand" href="#top" aria-label="声息首页"><span class="brand-row"><span class="brand-name">声息</span><span class="brand-sub">Shengxi</span></span></a>
     <nav><a href="#top" id="nav-shelf">我的书架</a></nav>
+    <button class="button button-quiet notification-bell" id="open-notifications" aria-label="通知中心" title="通知中心"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 8-3 8h18s-3-1-3-8"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg><i class="bell-dot" id="bell-dot" hidden></i></button>
     <button class="button button-quiet" id="open-settings">设置</button>
   </header>
 
@@ -181,7 +182,7 @@
 
   <dialog id="daily-brief-dialog" class="dialog"><form id="daily-brief-form"><div class="dialog-header"><h2>每日速听</h2><button type="button" aria-label="关闭" class="icon-button" data-close-dialog="daily-brief-dialog">×</button></div><p class="form-note">订阅公开 RSS 或 Atom 源。系统每天只收集新文章并建立待审速听任务；不会自动发布，也不会自动生成最终 MP3。</p><label>订阅名称<input required name="name" maxlength="120" placeholder="例如：数据合规资讯" /></label><label>RSS / Atom 地址<input required name="feed_url" type="url" placeholder="https://example.com/feed.xml" /></label><div class="plan-settings"><div class="field"><label>每日运行时间<input name="daily_time" type="time" value="08:00" /></label></div><div class="field"><label>每次最多收集<input name="max_items" type="number" min="1" max="10" value="3" /> 篇</label></div></div><label class="check-label"><input type="checkbox" name="auto_generate" /> 允许自动生成待审速听稿与音频脚本（仅在模型已配置且允许发送素材时）</label><div class="dialog-actions"><button type="button" class="button button-outline" data-close-dialog="daily-brief-dialog">取消</button><button type="submit" class="button button-primary">保存订阅</button></div></form></dialog>
 
-  <script src="/chapters.js?v=20261019-6"></script>
-  <script src="/app.js?v=20261019-6"></script>
+  <script src="/chapters.js?v=20261102-1"></script>
+  <script src="/app.js?v=20261102-1"></script>
 </body>
 </html>

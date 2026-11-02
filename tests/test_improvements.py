@@ -104,13 +104,13 @@ class ImprovementsTest(unittest.TestCase):
             conn.execute("INSERT INTO existing_content VALUES ('keep-me')")
         with patch.object(self.main, 'DATA_DIR', old_dir), patch.object(self.main, 'DB_PATH', database):
             self.main.init_db()
-        backups = list((old_dir / 'backups').glob('app-before-schema-2-*.db'))
+        backups = list((old_dir / 'backups').glob(f'app-before-schema-{self.main.SCHEMA_VERSION}-*.db'))
         self.assertEqual(len(backups), 1)
         with sqlite3.connect(backups[0]) as conn:
             self.assertEqual(conn.execute("SELECT value FROM app_metadata WHERE key = 'schema_version'").fetchone()[0], '1')
         with sqlite3.connect(database) as conn:
             self.assertEqual(conn.execute('SELECT value FROM existing_content').fetchone()[0], 'keep-me')
-            self.assertEqual(conn.execute("SELECT value FROM app_metadata WHERE key = 'schema_version'").fetchone()[0], '2')
+            self.assertEqual(conn.execute("SELECT value FROM app_metadata WHERE key = 'schema_version'").fetchone()[0], str(self.main.SCHEMA_VERSION))
             self.assertIsNotNone(conn.execute("SELECT name FROM sqlite_master WHERE name = 'learning_progress'").fetchone())
 
     def test_chatgpt_mcp_exposes_core_lawflow_tools(self):
