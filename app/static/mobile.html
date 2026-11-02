@@ -100,6 +100,7 @@ a.dl { color: var(--muted); font-size: 12px; text-decoration: none; }
   var audio = document.getElementById('audio');
   var chapters = [];
   var current = -1;
+  var initialIndex = 0;
   var speeds = [1, 1.25, 1.5, 2];
   var speedIndex = 0;
   var pendingSeek = 0;
@@ -247,6 +248,8 @@ a.dl { color: var(--muted); font-size: 12px; text-decoration: none; }
     if (index < 0 || index >= chapters.length) return;
     var ch = chapters[index];
     current = index;
+    initialIndex = index;
+    localStorage.setItem('sx-last-chapter:' + token, ch.id);
     var resume = Number(localStorage.getItem(posKey(ch.id)) || 0);
     var rate = speeds[speedIndex];
     resolveAudio(ch).then(function (url) {
@@ -335,7 +338,7 @@ a.dl { color: var(--muted); font-size: 12px; text-decoration: none; }
 
   function step(delta) {
     if (!chapters.length) return;
-    var next = (current + delta + chapters.length) % chapters.length;
+    var next = ((current < 0 ? initialIndex : current) + delta + chapters.length) % chapters.length;
     play(next);
   }
 
@@ -358,6 +361,20 @@ a.dl { color: var(--muted); font-size: 12px; text-decoration: none; }
       if (chapters.length) {
         $('player').hidden = false;
         current = -1;
+        // 优先展示上次收听的章节，但不自动播放；文稿和下载也可直接使用。
+        var lastId = localStorage.getItem('sx-last-chapter:' + token);
+        initialIndex = Math.max(0, chapters.findIndex(function (chapter) { return chapter.id === lastId; }));
+        var first = chapters[initialIndex];
+        var duration = first.duration_seconds || 0;
+        var saved = Number(localStorage.getItem(posKey(first.id)) || 0);
+        var resume = saved > 2 && (!duration || saved < duration - 3) ? saved : 0;
+        $('now-title').textContent = (initialIndex + 1) + '. ' + first.title;
+        $('now-time').textContent = fmt(resume) + ' / ' + fmt(duration);
+        $('seek').value = duration ? String(Math.round(resume / duration * 1000)) : '0';
+        $('dl').hidden = offlineMode;
+        $('dl').href = api + '/audio/' + encodeURIComponent(first.id) + '?download=1';
+        $('transcript').textContent = first.text || '这一章暂时没有配套文稿。';
+        $('transcript-btn').hidden = !first.text;
         $('dl-all').hidden = false;
         var cachedCount = chapters.filter(function (ch) { return cachedIds[ch.id]; }).length;
         $('cache-btn').textContent = '☁ 离线缓存（' + cachedCount + ' / ' + chapters.length + ' 章）';
@@ -454,7 +471,7 @@ a.dl { color: var(--muted); font-size: 12px; text-decoration: none; }
   });
 
   $('play').addEventListener('click', function () {
-    if (current < 0) { play(0); return; }
+    if (current < 0) { play(initialIndex); return; }
     if (audio.paused) audio.play().catch(function () {}); else audio.pause();
   });
   audio.addEventListener('play', function () { $('play').textContent = '⏸'; });

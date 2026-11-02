@@ -88,3 +88,5 @@ body.in-project #collection-bar { display: none; }
 .chapter-nav-item small { color: #6f6248; font-size: 12px; }
 .chapter-player label { font-size: 11.5px; color: #5f6b64; }
 .chapter-audio-hint { color: #5f6b64; }
+
+.chapter-quality-hint { margin: 0 0 18px; padding: 12px 15px; border-left: 3px solid #b89a62; border-radius: 4px; background: #fbf6e9; color: #62533d; font-size: 13px; line-height: 1.7; }

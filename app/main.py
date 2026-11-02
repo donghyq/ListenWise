@@ -285,26 +285,26 @@ class DailyBriefSubscriptionCreate(BaseModel):
 DEMO_SOURCE_TITLE = "为什么我们越来越读不进长文章"
 LEGACY_DEMO_PROJECT_NAME = "示例：五分钟人工智能合规速听"
 DEMO_PROJECT_NAME = "示例：五分钟把收藏变成声音"
-DEMO_SOURCE_TEXT = """收集文章很容易，读完却很难。收藏夹里躺着的链接越来越多，真正看完的却寥寥无几。心理学上把这称为“收集的幻觉”：保存动作本身带来了掌控感，大脑便把“已保存”当作“已理解”，阅读的紧迫感随之消失。
+DEMO_SOURCE_TEXT = """收集文章很容易，读完却需要完整的时间。有时，收藏让人觉得已经处理过一篇文章，但真正理解它，仍需要回过头阅读和思考。
 
-碎片时间也在重塑阅读习惯。手机上的一段文字平均只能获得十几秒的注意力，长文章需要的持续专注成了稀缺能力。研究者发现，深度理解依赖于在段落之间建立联系、停下来反思，而略读和滑屏恰恰跳过了这些环节。
+手机阅读容易被消息和其他事情打断。读长文章时，我们可能需要在段落之间建立联系，停下来梳理自己的想法。
 
-一个被反复验证的解法是“二次遇见”：把收藏的文章转成音频，在通勤或散步时重听。听觉的线性节奏天然适合长内容，不能跳跃、不能快滑，注意力反而更容易留存。重听时大脑会自动把要点串联成叙事，这比收藏夹里的一次性囤积有效得多。"""
+换一种方式重新遇见收藏，或许会更方便：把文章转成音频，在通勤或散步时听一听。遇到值得思考的内容，可以暂停、重听，再回到原文核对。"""
 DEMO_MARKDOWN = """# 五分钟读懂：怎么把收藏夹里的文章真正读完
-
-收藏一篇文章只需要一秒，读完它却需要决心。今天聊一个几乎每个人都会遇到的问题：为什么我们存了那么多好文章，却一篇也读不进去，以及一个简单的解法。
 
 ## 收藏带来的错觉
 
-保存动作给了大脑一种“已经处理过”的满足感。心理学上称之为收集的幻觉：收藏本身带来掌控感，紧迫感随之消失。于是收藏夹越来越满，真正读完的比例越来越低。
+收藏一篇文章只需要一秒，读完它却需要决心。今天聊一个几乎每个人都会遇到的问题：为什么我们存了那么多好文章，却一篇也读不进去，以及一个简单的解法。
+
+有时，保存一篇文章会让人觉得这件事已经处理过了。但收藏只是留下一个入口，真正理解文章，还需要回过头阅读和思考。
 
 ## 碎片时间改变了阅读方式
 
-手机上的文字平均只能获得十几秒注意力。深度理解需要我们在段落之间建立联系、停下来反思，而快速滑动恰恰跳过这些环节。不是我们变笨了，而是阅读的节奏被切得太碎。
+手机阅读容易被消息和其他事情打断。读长文章时，我们需要在段落之间建立联系，停下来梳理自己的想法。忙碌的日子里，完整的阅读时间并不总是容易找到。
 
 ## 解法：让文章换一种方式遇见你
 
-把收藏转成音频，在通勤或散步时重听。听觉的线性节奏不能跳跃、不能快滑，注意力反而更容易留存；重听时大脑会把要点自动串成叙事。这比在收藏夹里囤积有效得多。
+试着把收藏转成音频，在通勤或散步时听一听。遇到值得思考的内容，可以暂停、重听；想要进一步了解时，再回到原文核对。
 
 ## 结尾
 
@@ -1377,7 +1377,7 @@ def strip_heading_numbering(text: str) -> str:
     return result or original
 
 
-def create_plan_chapters(blocks: list[dict], output_type: str, selected_heading_ids: list[str] | None = None) -> list[dict]:
+def create_plan_chapters(blocks: list[dict], output_type: str, selected_heading_ids: list[str] | None = None, cover_all: bool = False) -> list[dict]:
     if selected_heading_ids:
         by_id = {block["id"]: block for block in blocks}
         if len(set(selected_heading_ids)) != len(selected_heading_ids) or any(block_id not in by_id or by_id[block_id]["kind"] != "heading" for block_id in selected_heading_ids):
@@ -1393,6 +1393,13 @@ def create_plan_chapters(blocks: list[dict], output_type: str, selected_heading_
             if ranges and heading["sequence_no"] < ranges[-1][1]:
                 raise HTTPException(400, "所选目录章节的正文范围重叠，请保留其中一个。")
             ranges.append((heading["sequence_no"], end, scoped))
+        if cover_all:
+            # AI 返回的是分章起点，而不是用户主动排除的章节。相邻起点之间的材料均需保留。
+            ranges = []
+            for index, heading in enumerate(headings):
+                start = blocks[0]["sequence_no"] if index == 0 else heading["sequence_no"]
+                end = headings[index + 1]["sequence_no"] if index + 1 < len(headings) else len(blocks) + 1
+                ranges.append((start, end, [block for block in blocks if start <= block["sequence_no"] < end]))
         prefix = {"partner_brief": "决策速览：", "client_brief": "法律简报：", "lexcast": "法声解读："}[output_type]
         return [{"id": f"chapter-{index}", "title": f"第{index:02d}章 · {strip_heading_numbering(heading['text'])}",
                  "source_heading": heading["text"], "source_heading_id": heading["id"], "source_block_ids": [block["id"] for block in scoped],
@@ -1410,13 +1417,16 @@ def create_plan_chapters(blocks: list[dict], output_type: str, selected_heading_
             content_primary.append(heading)
     primary = content_primary or primary
     if not primary:
-        primary = [block for block in blocks if block["kind"] == "heading"][:6]
+        primary = [block for block in blocks if block["kind"] == "heading"]
+    if len(primary) > 12:
+        raise HTTPException(400, f"检测到 {len(primary)} 个章节，单次最多支持 12 章。请选择需要的目录章节，或将材料分批导入。")
     chapters = []
     seen_titles = Counter()
-    for index, heading in enumerate(primary[:6], start=1):
-        start = heading["sequence_no"]
+    for index, heading in enumerate(primary, start=1):
+        # 把第一个标题前的背景或前言也纳入范围，避免用户未选择删减时遗漏原文。
+        start = blocks[0]["sequence_no"] if index == 1 else heading["sequence_no"]
         next_start = primary[index]["sequence_no"] if index < len(primary) else len(blocks) + 1
-        scoped = [block["id"] for block in blocks if start <= block["sequence_no"] < next_start][:400]
+        scoped = [block["id"] for block in blocks if start <= block["sequence_no"] < next_start]
         if not any(block["kind"] == "paragraph" for block in blocks if block["id"] in scoped):
             following = [block["id"] for block in blocks if block["sequence_no"] >= start and block["kind"] == "paragraph"]
             scoped = scoped + following[:12]
@@ -1448,7 +1458,7 @@ def create_plan_chapters(blocks: list[dict], output_type: str, selected_heading_
             "enabled": True,
         })
     if not chapters:
-        scoped = [block["id"] for block in blocks[:80]]
+        scoped = [block["id"] for block in blocks]
         chapters.append({"id": "chapter-1", "title": "第01章 · 材料核心解读", "source_heading": "全文", "source_block_ids": scoped, "question": "材料的核心结论、风险和后续动作是什么？", "estimated_length": "800–1200 字", "enabled": True})
     return chapters
 
@@ -2431,7 +2441,8 @@ def generate_narrative_markdown(outline: dict, blocks: list[dict], audience: str
     if podcast_profile and len(outline["sections"]) >= 2:
         # 播客稿先来一段开场白：欢迎、主线预告、把话头交给第一章，成稿不再突兀地直接进第一章。
         opening_text = generate_podcast_opening(outline, audience, reviewer_guidance)
-        section_sources.append({"section_id": "opening", "heading": "开场", "source_block_ids": []})
+        opening_sources = list(dict.fromkeys(block_id for section in outline["sections"] for block_id in section.get("source_block_ids", [])))
+        section_sources.append({"section_id": "opening", "heading": "开场", "source_block_ids": opening_sources})
     GENERATION_PROGRESS[progress_key] = {"status": "running", "total": len(outline["sections"]), "current": 0, "heading": ""}
     for section_index, section in enumerate(outline["sections"]):
         GENERATION_PROGRESS[progress_key] = {"status": "running", "total": len(outline["sections"]), "current": section_index + 1, "heading": section["heading"]}
@@ -2969,13 +2980,6 @@ def rename_project(project_id: str, payload: ProjectRename):
 @app.post("/api/demo-project", status_code=201)
 def create_demo_project():
     """创建本地可删除的完整示例，不调用任何外部模型服务。"""
-    # 旧版法律主题示例自动退场，避免书架里出现两个示例。
-    legacy = next((project for project in list_projects() if project["name"] == LEGACY_DEMO_PROJECT_NAME), None)
-    if legacy is not None:
-        try:
-            delete_project(legacy["id"])
-        except HTTPException:
-            pass  # 旧示例清理失败不影响新示例创建
     existing = next((project for project in list_projects() if project["name"] == DEMO_PROJECT_NAME), None)
     if existing is not None:
         audio_ready, audio_error = prepare_demo_audio(existing["id"])
@@ -3024,25 +3028,34 @@ def create_demo_project():
 
 
 def prepare_demo_audio(project_id: str) -> tuple[bool, str]:
-    """优先使用 macOS 本机语音补齐示例；失败时保留可查看的示例素材。"""
+    """用本机语音补齐示例各章；失败时保留已经生成的内容。"""
     conn = db()
-    output = conn.execute("SELECT * FROM audio_outputs WHERE project_id = ? ORDER BY created_at LIMIT 1", (project_id,)).fetchone()
-    content = conn.execute("SELECT id FROM narrative_contents WHERE project_id = ? AND status = 'confirmed' ORDER BY created_at LIMIT 1", (project_id,)).fetchone()
+    content = conn.execute("SELECT * FROM narrative_contents WHERE project_id = ? AND status = 'confirmed' ORDER BY created_at LIMIT 1", (project_id,)).fetchone()
     conn.close()
-    if output and output["status"] == "ready" and output["audio_path"] and Path(output["audio_path"]).is_file():
-        return True, ""
     if content is None:
         return False, "示例讲稿尚未确认。"
     try:
-        if output is None:
-            audio_id = create_audio_script(project_id, AudioScriptRequest(narrative_content_id=content["id"]))["id"]
-            conn = db()
-            output = conn.execute("SELECT * FROM audio_outputs WHERE id = ?", (audio_id,)).fetchone()
-            conn.close()
         settings = get_internal_provider_settings()
         if sys.platform == "darwin" and shutil.which("say"):
             settings.update({"tts_provider": "macos_say", "tts_voice": ""})
-        finish_audio_output(output, settings)
+        elif sys.platform == "win32":
+            settings.update({"tts_provider": "windows_sapi", "tts_voice": ""})
+        else:
+            return False, "示例试听需要可用的 Mac 或 Windows 本机语音；你仍可查看示例讲稿。"
+        for chapter in narrative_chapters(content):
+            heading = chapter["heading"]
+            title = heading if heading == content["title"] else f"{content['title']} · {heading}"
+            conn = db()
+            output = conn.execute("SELECT * FROM audio_outputs WHERE project_id = ? AND narrative_content_id = ? AND title = ? ORDER BY updated_at DESC, rowid DESC LIMIT 1", (project_id, content["id"], title)).fetchone()
+            conn.close()
+            if output and output["status"] == "ready" and output["audio_path"] and Path(output["audio_path"]).is_file():
+                continue
+            if output is None or output["status"] == "source_changed":
+                audio_id = create_audio_script(project_id, AudioScriptRequest(narrative_content_id=content["id"], section_heading=heading))["id"]
+                conn = db()
+                output = conn.execute("SELECT * FROM audio_outputs WHERE id = ?", (audio_id,)).fetchone()
+                conn.close()
+            finish_audio_output(output, settings)
         return True, ""
     except HTTPException as error:
         return False, str(error.detail)
@@ -3683,20 +3696,22 @@ def create_direct_audio_from_document(project_id: str, document_id: str):
         lines.append(text)
     conn.close()
     script = "\n\n".join(lines).strip()
-    if len(script) < 100:
-        raise HTTPException(400, "这份素材解析出的正文太短，还不适合直接转音频。")
+    if not script:
+        raise HTTPException(400, "这份素材没有可朗读的文字，请检查原文后重试。")
     if len(script) > 30000:
         raise HTTPException(400, "这份素材太长（超过 3 万字），原文直读一次合成耗时过久；建议用讲稿改写压缩后再转音频。")
     title = clean_text(document["original_name"]) or "原文直读"
     timestamp = now_iso()
     conn = db()
     existing = conn.execute(
-        "SELECT id FROM audio_outputs WHERE project_id = ? AND narrative_content_id IS NULL AND title = ?",
-        (project_id, title),
+        "SELECT id, status, audio_path FROM audio_outputs WHERE project_id = ? AND narrative_content_id IS NULL AND title = ? AND script = ? ORDER BY updated_at DESC, rowid DESC LIMIT 1",
+        (project_id, title, script),
     ).fetchone()
+    audio_available = bool(existing and existing["status"] == "ready" and existing["audio_path"] and Path(existing["audio_path"]).is_file())
     if existing:
         audio_id = existing["id"]
-        conn.execute("UPDATE audio_outputs SET script=?, audio_path='', duration_seconds=0, status='script_ready', updated_at=? WHERE id=?", (script, timestamp, audio_id))
+        if not audio_available:
+            conn.execute("UPDATE audio_outputs SET audio_path='', duration_seconds=0, status='script_ready', updated_at=? WHERE id=?", (timestamp, audio_id))
     else:
         audio_id = str(uuid.uuid4())
         conn.execute(
@@ -3707,7 +3722,7 @@ def create_direct_audio_from_document(project_id: str, document_id: str):
     conn.execute("UPDATE projects SET updated_at = ? WHERE id = ?", (timestamp, project_id))
     conn.commit()
     conn.close()
-    return {"id": audio_id, "title": title, "script_chars": len(script), "status": "script_ready", "reused": bool(existing)}
+    return {"id": audio_id, "title": title, "script_chars": len(script), "status": "ready" if audio_available else "script_ready", "audio_available": audio_available, "reused": bool(existing)}
 
 
 @app.post("/api/projects/{project_id}/plans", status_code=201)
@@ -3737,7 +3752,7 @@ def create_plan(project_id: str, payload: PlanCreate):
             raise  # 模型未配置或服务异常时直接告知用户，不静默降级
         except (ValueError, json.JSONDecodeError):
             split_mode_used = "rules"  # 模型输出不可用，回退到目录规则切分
-    chapters = create_plan_chapters(blocks, output_type, selected_heading_ids)
+    chapters = create_plan_chapters(blocks, output_type, selected_heading_ids, cover_all=split_mode_used == "ai")
     for chapter in chapters:
         ai_question = custom_questions.get(chapter.get("source_heading_id", ""))
         if ai_question:
@@ -3775,9 +3790,11 @@ def confirm_plan(plan_id: str, payload: PlanConfirm):
         conn.close()
         raise HTTPException(400, "请至少启用一个包含有效材料块的章节。")
     timestamp = now_iso()
+    structure_changed = plan["status"] != "confirmed" or json.loads(plan["chapters_json"]) != payload.chapters
     conn.execute("UPDATE content_plans SET chapters_json = ?, status = 'confirmed', updated_at = ? WHERE id = ?", (json.dumps(payload.chapters, ensure_ascii=False), timestamp, plan_id))
-    # 旧大纲是基于旧章节结构生成的派生品，确认新结构后作废，让第二步自动重建
-    conn.execute("DELETE FROM narrative_outlines WHERE project_id = ? AND (source_plan_id IS NULL OR source_plan_id != ?)", (plan["project_id"], plan_id))
+    if structure_changed:
+        # 旧大纲仍被历史讲稿引用；直接删除会级联删除讲稿并使音频失去关联。
+        conn.execute("UPDATE narrative_outlines SET status = 'superseded' WHERE project_id = ? AND status != 'superseded'", (plan["project_id"],))
     # 待核验事项属于材料审阅与项目执行层，应在章节范围确认后立即生成。
     # 这使律师可以先分配/关闭事项，再决定是否将已确认事实转译为对外长文。
     project_row = conn.execute("SELECT * FROM projects WHERE id = ?", (plan["project_id"],)).fetchone()
@@ -3798,7 +3815,7 @@ def confirm_plan(plan_id: str, payload: PlanConfirm):
     conn.execute("UPDATE projects SET updated_at = ? WHERE id = ?", (timestamp, plan["project_id"]))
     conn.commit()
     conn.close()
-    return {"id": plan_id, "status": "confirmed", "chapters": payload.chapters, "tasks_generated": bool(project_row is not None and scenario_requires_tasks(dict(project_row)))}
+    return {"id": plan_id, "status": "confirmed", "chapters": payload.chapters, "structure_changed": structure_changed, "tasks_generated": bool(project_row is not None and scenario_requires_tasks(dict(project_row)))}
 
 
 @app.get("/api/narrative/profiles")
@@ -4269,8 +4286,12 @@ def preview_section_revision(content_id: str, section_id: str, payload: SectionR
     instructions = payload.instructions.strip()
     if not instructions:
         raise HTTPException(400, "请先说明本章哪里不合适，以及希望怎样调整。")
-    blocks = read_project_blocks(row["project_id"], chapter["source_block_ids"])
-    if not blocks or {b["id"] for b in blocks} != set(chapter["source_block_ids"]):
+    source_ids = chapter["source_block_ids"]
+    # 旧版生成的开场没有单独记录来源，沿用大纲的原始材料范围供用户提出修改意见。
+    if not source_ids and chapter["id"] == "opening":
+        source_ids = parse_json(outline_row["source_block_ids_json"], [])
+    blocks = read_project_blocks(row["project_id"], source_ids)
+    if not blocks or {b["id"] for b in blocks} != set(source_ids):
         raise HTTPException(409, "本章材料范围已变化，请先检查原文依据。")
     profile = get_style_profiles().get(outline_row["style_profile"], {})
     prompt = "请根据用户意见修改一个章节，输出可直接审阅的 Markdown 正文，不输出章节标题、解释或代码围栏。\n"

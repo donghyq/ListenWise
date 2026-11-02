@@ -111,6 +111,26 @@ class AiChapterProposalTest(unittest.TestCase):
 
 
 class PlanTitleCleanupTest(unittest.TestCase):
+    def test_rule_split_keeps_long_unstructured_and_long_chapter_material(self):
+        paragraphs = [{"id": f"p{i}", "kind": "paragraph", "sequence_no": i, "text": f"正文 {i}"} for i in range(1, 451)]
+        chapters = app_main.create_plan_chapters(paragraphs, "lexcast")
+        self.assertEqual(chapters[0]["source_block_ids"], [p["id"] for p in paragraphs])
+        blocks = [{"id": "h", "kind": "heading", "heading_level": 1, "sequence_no": 0, "text": "章节"}] + paragraphs
+        chapters = app_main.create_plan_chapters(blocks, "lexcast")
+        self.assertEqual(chapters[0]["source_block_ids"], [b["id"] for b in blocks])
+
+    def test_rule_split_retains_first_material_and_all_seven_sections(self):
+        blocks = [{"id": "intro", "kind": "paragraph", "sequence_no": 0, "text": "开篇重要背景"}]
+        for i in range(7):
+            blocks.extend([
+                {"id": f"h{i}", "kind": "heading", "heading_level": 1, "sequence_no": i * 3 + 1, "text": f"章节 {i}"},
+                {"id": f"p{i}a", "kind": "paragraph", "sequence_no": i * 3 + 2, "text": "正文一"},
+                {"id": f"p{i}b", "kind": "paragraph", "sequence_no": i * 3 + 3, "text": "正文二"},
+            ])
+        chapters = app_main.create_plan_chapters(blocks, "lexcast")
+        self.assertEqual(len(chapters), 7)
+        self.assertEqual([block_id for chapter in chapters for block_id in chapter["source_block_ids"]], [b["id"] for b in blocks])
+
     def test_auto_split_titles_have_no_output_prefix(self):
         chapters = app_main.create_plan_chapters(make_blocks(), "lexcast", None)
         self.assertTrue(chapters)
@@ -123,6 +143,13 @@ class PlanTitleCleanupTest(unittest.TestCase):
         chapters = app_main.create_plan_chapters(make_blocks(), "lexcast", ["h1", "h3"])
         self.assertEqual([chapter["title"] for chapter in chapters], ["第01章 · 背景", "第02章 · 数据出境"])
         self.assertEqual([chapter["source_heading_id"] for chapter in chapters], ["h1", "h3"])
+
+    def test_ai_chapter_starts_cover_intermediate_and_remaining_material(self):
+        blocks = make_blocks()
+        ai_chapters = app_main.create_plan_chapters(blocks, 'lexcast', ['h1', 'h4'], cover_all=True)
+        self.assertEqual([block_id for chapter in ai_chapters for block_id in chapter['source_block_ids']], [b['id'] for b in blocks])
+        manual = app_main.create_plan_chapters(blocks, 'lexcast', ['h1', 'h4'])
+        self.assertNotIn('p3', [block_id for chapter in manual for block_id in chapter['source_block_ids']])
 
 
 if __name__ == "__main__":

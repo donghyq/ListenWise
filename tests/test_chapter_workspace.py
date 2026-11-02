@@ -57,6 +57,19 @@ class ChapterWorkspaceTest(unittest.TestCase):
         self.assertTrue(all(a['audio_available'] for a in after['audio_outputs']))
         self.assertEqual(result.json()['original'], '当前背景。')
 
+    def test_opening_from_old_version_can_be_revised_using_outline_sources(self):
+        project, _, _, content_id, _ = self.make_book()
+        with self.main.db() as conn:
+            row = conn.execute('SELECT section_sources_json FROM narrative_contents WHERE id=?', (content_id,)).fetchone()
+            sources = [{'section_id': 'opening', 'heading': '开场', 'source_block_ids': []}] + json.loads(row[0])
+            conn.execute("UPDATE narrative_contents SET markdown = '## 开场\n\n这是旧版开场。\n\n' || markdown, section_sources_json=? WHERE id=?", (json.dumps(sources, ensure_ascii=False), content_id))
+        opening = self.state(project)['narrative_contents'][0]['chapters'][0]
+        with patch.object(self.main, 'model_chat', return_value='这是修改后的开场。') as model:
+            result = self.client.post(f'/api/narrative-contents/{content_id}/sections/opening/revision', json={'instructions': '让开场更简洁', 'base_version': opening['version']})
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertIn('第一段记录', model.call_args.args[0][-1]['content'])
+        self.assertEqual(result.json()['body'], '这是修改后的开场。')
+
     def test_accept_changes_only_target_chapter_and_its_audio(self):
         project, _, _, content_id, audios = self.make_book()
         self.client.put(f'/api/narrative-contents/{content_id}/progress', json={'section_id': 'section-1', 'completed': True})
@@ -124,6 +137,40 @@ class ChapterWorkspaceTest(unittest.TestCase):
         self.assertEqual(result.status_code, 201)
         self.assertNotEqual(result.json()['id'], outline_id)
         self.assertEqual(self.state(project)['narrative_contents'][0]['outline_id'], outline_id)
+
+    def test_confirm_new_plan_preserves_existing_text_and_audio(self):
+        project, source, outline_id, content_id, audios = self.make_book()
+        old_content = self.state(project)['narrative_contents'][0]
+        plan = self.client.post(f"/api/projects/{project['id']}/plans", json={
+            'source_document_id': source['id'], 'auto_split': True, 'split_mode': 'rules',
+            'output_type': 'lexcast', 'style_name': '适合朗读', 'audience': '个人学习',
+        })
+        self.assertEqual(plan.status_code, 201, plan.text)
+        result = self.client.put('/api/plans/' + plan.json()['id'] + '/confirm', json={'chapters': plan.json()['chapters']})
+        self.assertEqual(result.status_code, 200, result.text)
+        after = self.state(project)
+        self.assertEqual(next(c for c in after['narrative_contents'] if c['id'] == content_id)['markdown'], old_content['markdown'])
+        self.assertEqual(next(o for o in after['narrative_outlines'] if o['id'] == outline_id)['status'], 'superseded')
+        self.assertTrue(all(next(a for a in after['audio_outputs'] if a['id'] == audio_id)['audio_available'] for audio_id in audios))
+
+    def test_reconfirm_unchanged_plan_keeps_outline_but_edits_invalidate_it(self):
+        project, source, outline_id, content_id, _ = self.make_book()
+        plan = self.client.post(f"/api/projects/{project['id']}/plans", json={
+            'source_document_id': source['id'], 'auto_split': True, 'split_mode': 'rules',
+            'output_type': 'lexcast', 'style_name': '适合朗读', 'audience': '个人学习',
+        }).json()
+        endpoint = '/api/plans/' + plan['id'] + '/confirm'
+        self.assertTrue(self.client.put(endpoint, json={'chapters': plan['chapters']}).json()['structure_changed'])
+        with self.main.db() as conn:
+            conn.execute("UPDATE narrative_outlines SET status='confirmed', source_plan_id=? WHERE id=?", (plan['id'], outline_id))
+        self.assertFalse(self.client.put(endpoint, json={'chapters': plan['chapters']}).json()['structure_changed'])
+        self.assertEqual(next(o for o in self.state(project)['narrative_outlines'] if o['id'] == outline_id)['status'], 'confirmed')
+        edited = [dict(chapter) for chapter in plan['chapters']]
+        edited[0]['title'] = '重新命名的一章'
+        self.assertTrue(self.client.put(endpoint, json={'chapters': edited}).json()['structure_changed'])
+        after = self.state(project)
+        self.assertEqual(next(o for o in after['narrative_outlines'] if o['id'] == outline_id)['status'], 'superseded')
+        self.assertTrue(any(c['id'] == content_id for c in after['narrative_contents']))
 
     def test_audiobook_rebuilds_changed_audio_and_mobile_keeps_chapter_order(self):
         project, _, _, content_id, audios = self.make_book()

@@ -60,14 +60,15 @@ class ImprovementsTest(unittest.TestCase):
             },
             request=httpx.Request('GET', 'https://api.github.com/repos/donghyq/ListenWise/releases/latest'),
         )
-        with patch.object(self.main.httpx, 'get', return_value=response):
+        with patch.object(self.main, '__version__', '0.1.0'), patch.object(self.main.httpx, 'get', return_value=response):
             result = self.client.get('/api/app/version')
+            health_version = self.client.get('/api/health').json()['version']
         self.assertEqual(result.status_code, 200)
         self.assertEqual(result.json()['current_version'], '0.1.0')
         self.assertEqual(result.json()['latest_version'], '0.2.0')
         self.assertTrue(result.json()['update_available'])
         self.assertTrue(result.json()['check_succeeded'])
-        self.assertEqual(self.client.get('/api/health').json()['version'], '0.1.0')
+        self.assertEqual(health_version, '0.1.0')
 
     def test_version_check_failure_never_blocks_local_app(self):
         import httpx
@@ -953,25 +954,35 @@ class ImprovementsTest(unittest.TestCase):
             self.assertFalse(empty.json()['available'])
             self.assertIn('系统设置', empty.json()['hint'])
 
-    def test_demo_project_is_generic_and_legacy_cleanup(self):
-        created = self.client.post('/api/demo-project')
+    def test_demo_project_is_generic_preserves_legacy_and_has_chapter_audio(self):
+        legacy = self.client.post('/api/projects', json={'name': self.main.LEGACY_DEMO_PROJECT_NAME}).json()
+        generated = []
+        def fake_synthesis(script, title, settings):
+            path = self.temp_dir / f'demo-chapter-{len(generated)}.mp3'
+            path.write_bytes(b'mock-audio')
+            generated.append(title)
+            return path, 'test', 1
+        with patch.object(self.main.sys, 'platform', 'darwin'), patch.object(self.main.shutil, 'which', return_value='/usr/bin/say'), patch.object(self.main, 'synthesize_audio', side_effect=fake_synthesis):
+            created = self.client.post('/api/demo-project')
+            again = self.client.post('/api/demo-project').json()
         self.assertEqual(created.status_code, 201)
         first = created.json()
         self.assertTrue(first['created'])
         projects = self.client.get('/api/projects').json()
         names = [item['name'] for item in projects]
         self.assertIn(self.main.DEMO_PROJECT_NAME, names)
-        self.assertNotIn(self.main.LEGACY_DEMO_PROJECT_NAME, names)
+        self.assertTrue(any(item['id'] == legacy['id'] for item in projects))
         detail = self.client.get('/api/projects/' + first['project_id']).json()
         script_texts = [item['script'] for item in detail['audio_outputs']]
         joined = ' '.join(script_texts)
         for term in ('法律', '律师', '备案', '合规'):
             self.assertNotIn(term, joined)
         self.assertIn('收藏', joined)
+        self.assertEqual(len([item for item in detail['audio_outputs'] if item['audio_available']]), 4)
         # 重复调用幂等
-        again = self.client.post('/api/demo-project').json()
         self.assertFalse(again['created'])
         self.assertEqual(again['project_id'], first['project_id'])
+        self.assertEqual(len(generated), 4)
 
     def test_edge_tts_falls_back_to_macos_say_when_offline(self):
         class BrokenCommunicate:
@@ -1227,6 +1238,17 @@ class ImprovementsTest(unittest.TestCase):
         again = self.client.post(f"/api/projects/{project['id']}/documents/{source['id']}/direct-audio").json()
         self.assertEqual(again['id'], data['id'])
         self.assertTrue(again['reused'])
+        self.assertEqual(again['status'], 'ready')
+        self.assertTrue(again['audio_available'])
+        self.assertTrue(self.client.get(f"/api/audio-outputs/{data['id']}").json()['audio_available'])
+
+    def test_short_text_can_be_read_aloud_without_a_model(self):
+        project = self.client.post('/api/projects', json={'name': '短文本朗读'}).json()
+        source = self.client.post(f"/api/projects/{project['id']}/text-sources", json={'title': '短文', 'content': '这一段很短，也应当可以直接朗读。就像一段日常笔记。'}).json()
+        result = self.client.post(f"/api/projects/{project['id']}/documents/{source['id']}/direct-audio")
+        self.assertEqual(result.status_code, 200, result.text)
+        output = self.client.get(f"/api/audio-outputs/{result.json()['id']}").json()
+        self.assertIn('这一段很短，也应当可以直接朗读。', output['script'])
 
     def test_reveal_endpoint_rejects_outside_paths(self):
         response = self.client.post('/api/reveal-in-finder', json={'path': '/etc/hosts'})
