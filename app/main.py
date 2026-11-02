@@ -180,6 +180,10 @@ async def mobile_route_guard(request: Request, call_next):
 
 RELEASE_REPOSITORY = os.getenv("LAWFLOW_RELEASE_REPOSITORY", "donghyq/ListenWise").strip()
 SCHEMA_VERSION = 3
+# 文件夹监听只处理这些扩展名；导入状态用独立表记录，路径唯一。
+WATCH_EXTENSIONS = {".docx", ".pdf", ".txt", ".md"}
+WATCH_SCAN_LOCK = threading.Lock()
+WATCH_IMPORT_THREAD: threading.Thread | None = None
 
 MODEL_PRESETS = {
     "openai": {"provider_name": "OpenAI", "base_url": "https://api.openai.com/v1", "model_name": "gpt-4.1-mini", "tts_model": "gpt-4o-mini-tts"},
@@ -263,6 +267,10 @@ class ProjectCreate(BaseModel):
 
 class ProjectCollectionUpdate(BaseModel):
     collection: str = Field(default="", max_length=60)
+
+
+class ProjectSeriesUpdate(BaseModel):
+    series: str = Field(default="", max_length=120)
 
 
 class ProjectRename(BaseModel):
@@ -390,6 +398,7 @@ class AudioScriptUpdate(BaseModel):
 
 class ExportSettings(BaseModel):
     output_directory: str = str(DEFAULT_EXPORT_DIR)
+    watch_directory: str = ""
 
 
 class ReviewUpdate(BaseModel):
@@ -828,6 +837,18 @@ def init_db() -> None:
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS project_series (
+            project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+            series TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS watch_imports (
+            path TEXT PRIMARY KEY,
+            content_hash TEXT NOT NULL DEFAULT '',
+            imported_at TEXT NOT NULL DEFAULT '',
+            project_id TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'imported'
+        );
         """
     )
     existing_columns = {row[1] for row in conn.execute("PRAGMA table_info(projects)").fetchall()}
@@ -862,12 +883,16 @@ def init_db() -> None:
 init_db()
 
 
-def serialise_project(row: sqlite3.Row) -> dict:
+def serialise_project(row: sqlite3.Row, series_value: str | None = None) -> dict:
     item = dict(row)
     conn = db()
     item["document_count"] = conn.execute("SELECT COUNT(*) FROM source_documents WHERE project_id = ?", (item["id"],)).fetchone()[0]
     item["task_count"] = conn.execute("SELECT COUNT(*) FROM tasks WHERE project_id = ?", (item["id"],)).fetchone()[0]
+    if series_value is None:
+        series_value = conn.execute("SELECT series FROM project_series WHERE project_id = ?", (item["id"],)).fetchone()
+        series_value = series_value["series"] if series_value else ""
     conn.close()
+    item["series"] = series_value
     return item
 
 
@@ -3162,6 +3187,7 @@ async def start_daily_brief_scheduler() -> None:
     with db() as conn:
         conn.execute("UPDATE generation_jobs SET status = 'interrupted', message = '应用重启，生成中断，可继续', updated_at = ? WHERE status = 'running'", (now_iso(),))
     asyncio.create_task(daily_brief_scheduler())
+    start_watch_import_thread()
 
 
 @app.middleware("http")
@@ -3281,9 +3307,15 @@ def project_audio_durations(conn: sqlite3.Connection, project_id: str | None = N
 
 
 @app.get("/api/projects")
-def list_projects():
+def list_projects(series: str = ""):
     conn = db()
-    rows = [serialise_project(row) for row in conn.execute("SELECT * FROM projects ORDER BY updated_at DESC").fetchall()]
+    rows = conn.execute("SELECT * FROM projects ORDER BY updated_at DESC").fetchall()
+    # 每个项目都要显示系列；列表页用一次批量查询避免逐卡片回表。
+    series_map = {
+        row["project_id"]: row["series"]
+        for row in conn.execute("SELECT project_id, series FROM project_series").fetchall()
+    }
+    serialised = [serialise_project(row, series_map.get(row["id"], "")) for row in rows]
     stages: dict[str, dict[str, bool]] = {}
     for row in conn.execute("SELECT project_id, status FROM narrative_outlines").fetchall():
         if row["status"] == "confirmed":
@@ -3314,11 +3346,30 @@ def list_projects():
         agg["done"] += min(done, total)
     durations = project_audio_durations(conn)
     conn.close()
-    for item in rows:
+    if series.strip():
+        serialised = [item for item in serialised if item["series"] == series.strip()]
+    for item in serialised:
         item["production_stage"] = stages.get(item["id"], {})
         item["learning_progress"] = progress.get(item["id"], {"done": 0, "total": 0})
         item["audio_duration_seconds"] = durations.get(item["id"], 0)
-    return rows
+    return serialised
+
+
+@app.get("/api/series")
+def list_series():
+    """把书架里同名系列聚合成卡片可用的总量与进度。"""
+    grouped: dict[str, dict] = {}
+    for project in list_projects():
+        name = (project.get("series") or "").strip()
+        if not name:
+            continue
+        item = grouped.setdefault(name, {"name": name, "count": 0, "total_seconds": 0, "done": 0, "total": 0})
+        item["count"] += 1
+        item["total_seconds"] += max(0, int(project.get("audio_duration_seconds") or 0))
+        progress = project.get("learning_progress") or {}
+        item["done"] += max(0, int(progress.get("done") or 0))
+        item["total"] += max(0, int(progress.get("total") or 0))
+    return sorted(grouped.values(), key=lambda item: item["name"].lower())
 
 
 @app.get("/api/daily-brief-subscriptions")
@@ -3383,7 +3434,7 @@ def create_project(payload: ProjectCreate):
     row = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
     conn.close()
     (PROJECTS_DIR / project_id / "sources").mkdir(parents=True, exist_ok=True)
-    return serialise_project(row)
+    return serialise_project(row, "")
 
 
 @app.put("/api/projects/{project_id}/collection")
@@ -3396,8 +3447,34 @@ def update_project_collection(project_id: str, payload: ProjectCollectionUpdate)
     conn.execute("UPDATE projects SET collection = ?, updated_at = ? WHERE id = ?", (payload.collection.strip(), now_iso(), project_id))
     conn.commit()
     updated = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+    series = conn.execute("SELECT series FROM project_series WHERE project_id = ?", (project_id,)).fetchone()
     conn.close()
-    return serialise_project(updated)
+    return serialise_project(updated, series["series"] if series else "")
+
+
+@app.put("/api/projects/{project_id}/series")
+def update_project_series(project_id: str, payload: ProjectSeriesUpdate):
+    """把项目归入一个系列；空字符串表示移出系列。"""
+    conn = db()
+    row = conn.execute("SELECT id FROM projects WHERE id = ?", (project_id,)).fetchone()
+    if row is None:
+        conn.close()
+        raise HTTPException(status_code=404, detail="项目不存在。")
+    timestamp = now_iso()
+    series = payload.series.strip()
+    if series:
+        conn.execute(
+            """INSERT INTO project_series (project_id, series, updated_at) VALUES (?, ?, ?)
+            ON CONFLICT(project_id) DO UPDATE SET series = excluded.series, updated_at = excluded.updated_at""",
+            (project_id, series, timestamp),
+        )
+    else:
+        conn.execute("DELETE FROM project_series WHERE project_id = ?", (project_id,))
+    conn.execute("UPDATE projects SET updated_at = ? WHERE id = ?", (timestamp, project_id))
+    conn.commit()
+    updated = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+    conn.close()
+    return serialise_project(updated, series)
 
 
 @app.put("/api/projects/{project_id}/name")
@@ -3410,8 +3487,9 @@ def rename_project(project_id: str, payload: ProjectRename):
     conn.execute("UPDATE projects SET name = ?, updated_at = ? WHERE id = ?", (payload.name.strip(), now_iso(), project_id))
     conn.commit()
     updated = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+    series = conn.execute("SELECT series FROM project_series WHERE project_id = ?", (project_id,)).fetchone()
     conn.close()
-    return serialise_project(updated)
+    return serialise_project(updated, series["series"] if series else "")
 
 
 @app.post("/api/demo-project", status_code=201)
@@ -3531,6 +3609,8 @@ def delete_project(project_id: str):
 def get_project(project_id: str):
     project = project_or_404(project_id)
     conn = db()
+    series_row = conn.execute("SELECT series FROM project_series WHERE project_id = ?", (project_id,)).fetchone()
+    project["series"] = series_row["series"] if series_row else ""
     docs = [dict(row) for row in conn.execute("SELECT * FROM source_documents WHERE project_id = ? ORDER BY created_at DESC", (project_id,)).fetchall()]
     plans = [dict(row) for row in conn.execute("SELECT * FROM content_plans WHERE project_id = ? ORDER BY updated_at DESC", (project_id,)).fetchall()]
     contents = [dict(row) for row in conn.execute("SELECT * FROM generated_contents WHERE project_id = ? ORDER BY updated_at DESC", (project_id,)).fetchall()]
@@ -5830,14 +5910,18 @@ def get_export_settings():
     row = conn.execute("SELECT setting_value FROM settings WHERE setting_key = 'export'").fetchone()
     conn.close()
     value = parse_json(row["setting_value"], {}) if row else {}
-    return {"output_directory": value.get("output_directory", str(DEFAULT_EXPORT_DIR)), "default_directory": str(DEFAULT_EXPORT_DIR)}
+    return {
+        "output_directory": value.get("output_directory", str(DEFAULT_EXPORT_DIR)),
+        "watch_directory": value.get("watch_directory", ""),
+        "default_directory": str(DEFAULT_EXPORT_DIR),
+    }
 
 
 @app.put("/api/settings/export")
 def save_export_settings(payload: ExportSettings):
     directory = resolve_export_directory(payload.output_directory)
     timestamp = now_iso()
-    value = {"output_directory": str(directory)}
+    value = {"output_directory": str(directory), "watch_directory": payload.watch_directory.strip()}
     conn = db()
     conn.execute(
         "INSERT INTO settings (setting_key, setting_value, updated_at) VALUES ('export', ?, ?) "
@@ -5846,7 +5930,153 @@ def save_export_settings(payload: ExportSettings):
     )
     conn.commit()
     conn.close()
-    return {"saved": True, "output_directory": str(directory)}
+    # 保存非空且已存在的目录后立即补启线程；线程首次扫描等 20 秒，避免和手动扫描竞争。
+    start_watch_import_thread()
+    return {"saved": True, "output_directory": str(directory), "watch_directory": value["watch_directory"]}
+
+
+def configured_watch_directory() -> Path | None:
+    """读取监听目录；目录由用户显式填写，这里不自动创建。"""
+    conn = db()
+    row = conn.execute("SELECT setting_value FROM settings WHERE setting_key = 'export'").fetchone()
+    conn.close()
+    value = parse_json(row["setting_value"], {}) if row else {}
+    raw = str(value.get("watch_directory") or "").strip()
+    return Path(raw).expanduser() if raw else None
+
+
+def ensure_watch_inbox_project() -> dict:
+    """找到或创建「收件箱」；监听导入的文件先集中放在这里等待用户整理。"""
+    with db() as conn:
+        row = conn.execute("SELECT id FROM projects WHERE name = '收件箱' COLLATE NOCASE").fetchone()
+    if row is not None:
+        return project_or_404(row["id"])
+    return create_project(ProjectCreate(
+        name="收件箱",
+        scenario="topic_learning",
+        transform_mode="adapt",
+        verification_mode="material_check",
+        audio_enabled=True,
+        web_research_mode="off",
+    ))
+
+
+def import_watch_file(project_id: str, path: Path) -> dict:
+    """把监听目录中的一个文件写入项目素材表，解析逻辑复用普通上传链路。"""
+    suffix = path.suffix.lower()
+    if suffix not in WATCH_EXTENSIONS:
+        raise ValueError("只支持 DOCX、PDF、TXT 或 Markdown 文件。")
+    blocks, structure = extract_document(path, suffix)
+    if not blocks:
+        raise ValueError("没有解析到可用的文字内容。")
+    document_id = str(uuid.uuid4())
+    source_dir = PROJECTS_DIR / project_id / "sources"
+    source_dir.mkdir(parents=True, exist_ok=True)
+    stored_path = source_dir / f"{document_id}{suffix}"
+    shutil.copyfile(path, stored_path)
+    digest = hashlib.sha256(stored_path.read_bytes()).hexdigest()
+    id_mapping = {block["id"]: f"{document_id}:{block['id']}" for block in blocks}
+    for block in blocks:
+        block["id"] = id_mapping[block["id"]]
+    for heading in structure.get("headings", []):
+        if heading.get("id") in id_mapping:
+            heading["id"] = id_mapping[heading["id"]]
+    fingerprint = content_fingerprint("\n".join(str(block.get("text") or "") for block in blocks))
+    timestamp = now_iso()
+    conn = db()
+    conn.execute(
+        """INSERT INTO source_documents
+        (id, project_id, original_name, stored_path, file_hash, file_size, file_type, paragraph_count, block_count, structure_json, content_fingerprint, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            document_id, project_id, path.name, str(stored_path), digest, stored_path.stat().st_size,
+            suffix[1:], structure["paragraph_count"], len(blocks), json.dumps(structure, ensure_ascii=False), fingerprint, timestamp,
+        ),
+    )
+    conn.executemany(
+        """INSERT INTO source_blocks (id, document_id, sequence_no, heading_path, heading_level, kind, text, source_locator, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        [
+            (block["id"], document_id, block["sequence_no"], block["heading_path"], block["heading_level"], block["kind"], block["text"], block["source_locator"], timestamp)
+            for block in blocks
+        ],
+    )
+    conn.execute("UPDATE projects SET updated_at = ? WHERE id = ?", (timestamp, project_id))
+    conn.commit()
+    conn.close()
+    return {"id": document_id, "name": path.name}
+
+
+def record_watch_import(path: str, content_hash: str, project_id: str, status: str) -> None:
+    timestamp = now_iso()
+    with db() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO watch_imports (path, content_hash, imported_at, project_id, status) VALUES (?, ?, ?, ?, ?)",
+            (path, content_hash, timestamp, project_id, status),
+        )
+
+
+def scan_watch_directory() -> dict:
+    """扫描监听目录；已记录过的路径不再导入，失败也不中断后续文件。"""
+    result = {"imported": [], "failed": []}
+    watch_dir = configured_watch_directory()
+    if watch_dir is None or not watch_dir.is_dir():
+        return result
+    candidates: list[tuple[float, str, Path]] = []
+    try:
+        for path in watch_dir.iterdir():
+            if not path.is_file() or path.suffix.lower() not in WATCH_EXTENSIONS:
+                continue
+            try:
+                candidates.append((path.stat().st_mtime, path.name, path))
+            except OSError:
+                continue
+    except OSError:
+        return result
+    candidates.sort(key=lambda item: (item[0], item[1]))
+    with WATCH_SCAN_LOCK:
+        with db() as conn:
+            known_paths = {row["path"] for row in conn.execute("SELECT path FROM watch_imports").fetchall()}
+        for _mtime, _name, path in candidates:
+            path_text = str(path.resolve())
+            if path_text in known_paths:
+                continue
+            project = ensure_watch_inbox_project()
+            try:
+                imported = import_watch_file(project["id"], path)
+                record_watch_import(path_text, hashlib.sha256(path.read_bytes()).hexdigest(), project["id"], "imported")
+                result["imported"].append({"path": path_text, "project_id": project["id"], "name": imported["name"]})
+            except Exception as error:
+                message = error.detail if isinstance(error, HTTPException) else str(error) or "导入失败。"
+                record_watch_import(path_text, "", project["id"], "failed")
+                result["failed"].append({"path": path_text, "error": str(message)})
+    return result
+
+
+def start_watch_import_thread() -> None:
+    """启动守护线程；首次扫描等 20 秒，避免文件刚保存就被读到一半。"""
+    global WATCH_IMPORT_THREAD
+    if configured_watch_directory() is None or not configured_watch_directory().is_dir():
+        return
+    if WATCH_IMPORT_THREAD is not None and WATCH_IMPORT_THREAD.is_alive():
+        return
+
+    def watch_worker():
+        while True:
+            time.sleep(20)
+            try:
+                scan_watch_directory()
+            except Exception:
+                # 单次扫描异常只影响这一轮；后台监听保持运行。
+                pass
+
+    WATCH_IMPORT_THREAD = threading.Thread(target=watch_worker, name="watch-import", daemon=True)
+    WATCH_IMPORT_THREAD.start()
+
+
+@app.post("/api/settings/watch/run")
+def run_watch_scan():
+    return scan_watch_directory()
 
 
 @app.post("/api/projects/{project_id}/exports", status_code=201)

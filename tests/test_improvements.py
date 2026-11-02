@@ -752,6 +752,14 @@ class ImprovementsTest(unittest.TestCase):
         draw.text((100, 490), 'Section two lists fallback behaviour.', fill='black', font=font)
         path = self.main.DATA_DIR / 'ocr-fixture.pdf'
         img.save(path, 'PDF', resolution=100.0)
+        # 仅判断 Vision 可导入还不够：模型资源缺失时会得到空结果，这类测试环境应跳过。
+        try:
+            ocr_ready = bool(self.main._ocr_pdf_text(path).strip())
+        except Exception:
+            ocr_ready = False
+        if not ocr_ready:
+            path.unlink(missing_ok=True)
+            self.skipTest('macOS Vision OCR 在当前环境不可用')
         try:
             blocks, _ = self.main.parse_pdf(path)
         finally:

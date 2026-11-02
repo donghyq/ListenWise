@@ -1,4 +1,4 @@
-const appState = { projects: [], selectedProjectId: null, selectedProject: null, selectedDocument: null, activeTab: 'materials', activePlan: null, editingContentId: null, collectionFilter: '', shelfQuery: '', shelfSort: 'updated', notifications: [], factChecks: {} };
+const appState = { projects: [], selectedProjectId: null, selectedProject: null, selectedDocument: null, activeTab: 'materials', activePlan: null, editingContentId: null, collectionFilter: '', seriesFilter: '', shelfQuery: '', shelfSort: 'updated', notifications: [], factChecks: {} };
 let quickLinkPreview = null;
 const SCENARIOS = {
   daily_brief: { name: '晨间 / 晚间速听', description: '单篇资讯或收藏文章的短时精炼收听', transform: 'condense', verification: 'source_only', duration: 5, audio: true, audience: '个人学习', narrativeLabel: '速听讲稿' },
@@ -287,6 +287,8 @@ function renderProjectList() {
   const filtered = appState.projects.filter(project => {
     const tag = (project.collection || '').trim();
     if (filter === '__untagged__' ? !!tag : filter && tag !== filter) return false;
+    const series = (project.series || '').trim();
+    if (appState.seriesFilter && series !== appState.seriesFilter) return false;
     return queryMatch(project);
   });
   const progressRatio = project => {
@@ -298,19 +300,27 @@ function renderProjectList() {
     name: (a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'zh-CN'),
     duration: (a, b) => (Number(b.audio_duration_seconds) || 0) - (Number(a.audio_duration_seconds) || 0),
     progress: (a, b) => progressRatio(b) - progressRatio(a),
+    series: (a, b) => {
+      const seriesA = (a.series || '').trim();
+      const seriesB = (b.series || '').trim();
+      if (!seriesA && seriesB) return 1;
+      if (seriesA && !seriesB) return -1;
+      return seriesA.localeCompare(seriesB, 'zh-CN') || String(b.updated_at || '').localeCompare(String(a.updated_at || ''));
+    },
   };
   const visible = filtered.sort(sorters[appState.shelfSort] || sorters.updated);
   if (!visible.length) {
     list.innerHTML = '<div class="empty-state"><b>' + (query ? '没有找到匹配的项目' : '这个收藏夹还是空的') + '</b><p>' + (query ? '换个关键词，或清空筛选。' : '换一个标签看看，或点卡片上的「＋ 收藏夹」把它归到这。') + '</p><button type="button" class="button button-outline button-small" id="clear-shelf-filters">清空筛选</button></div>';
     $('#clear-shelf-filters')?.addEventListener('click', () => {
       appState.collectionFilter = '';
+      appState.seriesFilter = '';
       appState.shelfQuery = '';
       const search = $('#shelf-search'); if (search) search.value = '';
       renderProjectList();
     });
     return;
   }
-  list.innerHTML = renderContinueHero() + visible.map(project => { const scenario = SCENARIOS[project.scenario] || SCENARIOS.topic_learning; const progress = project.learning_progress || { done: 0, total: 0 }; const percent = progress.total ? Math.round(progress.done / progress.total * 100) : 0; const progressHtml = progress.total ? '<div class="card-progress"><div class="card-progress-bar"><i style="width:' + percent + '%"></i></div><span>已学 ' + progress.done + ' / ' + progress.total + ' 节</span></div>' : ''; const tag = (project.collection || '').trim(); const tagBtn = '<button type="button" class="card-tag-btn' + (tag ? '' : ' untagged') + '" data-tag-project="' + project.id + '">' + (tag ? escapeHtml(tag) : '＋ 收藏夹') + '</button>'; const status = projectCardStatus(project, progress); const direct = !!project.production_stage?.has_direct_audio_script; const durationMeta = projectDurationMeta(project, direct); return '<div class="project-card" role="button" tabindex="0" data-project-id="' + project.id + '"><div class="card-cover"><img src="' + coverForProject(project.id) + '" alt="" loading="lazy" />' + status + '</div><div class="project-card-top"><span class="tag">' + escapeHtml(direct ? '原文朗读' : scenario.name) + '</span><small>' + formatDate(project.updated_at) + '</small><button type="button" class="card-rename-btn" data-rename-project="' + project.id + '" title="重命名项目" aria-label="重命名项目">✎</button></div><h3>' + escapeHtml(project.name) + '</h3><p>' + escapeHtml(direct ? '保留文章内容，直接生成音频' : project.description || project.client_name || scenario.name) + '</p>' + progressHtml + '<div class="meta">' + tagBtn + '<span>' + project.document_count + ' 份素材</span><span>' + (project.verification_mode === 'source_only' ? '仅依据原文' : project.task_count + ' 项核验') + '</span>' + (durationMeta ? '<span>' + escapeHtml(durationMeta) + '</span>' : '') + '</div></div>'; }).join('');
+  list.innerHTML = renderContinueHero() + visible.map(project => { const scenario = SCENARIOS[project.scenario] || SCENARIOS.topic_learning; const progress = project.learning_progress || { done: 0, total: 0 }; const percent = progress.total ? Math.round(progress.done / progress.total * 100) : 0; const progressHtml = progress.total ? '<div class="card-progress"><div class="card-progress-bar"><i style="width:' + percent + '%"></i></div><span>已学 ' + progress.done + ' / ' + progress.total + ' 节</span></div>' : ''; const tag = (project.collection || '').trim(); const tagBtn = '<button type="button" class="card-tag-btn' + (tag ? '' : ' untagged') + '" data-tag-project="' + project.id + '">' + (tag ? escapeHtml(tag) : '＋ 收藏夹') + '</button>'; const series = (project.series || '').trim(); const seriesBtn = series ? '<button type="button" class="card-series-btn' + (appState.seriesFilter === series ? ' active' : '') + '" data-series-filter="' + escapeHtml(series) + '" title="筛选这个系列">📚 ' + escapeHtml(series) + '</button>' : ''; const status = projectCardStatus(project, progress); const direct = !!project.production_stage?.has_direct_audio_script; const durationMeta = projectDurationMeta(project, direct); return '<div class="project-card" role="button" tabindex="0" data-project-id="' + project.id + '"><div class="card-cover"><img src="' + coverForProject(project.id) + '" alt="" loading="lazy" />' + status + '</div><div class="project-card-top"><span class="tag">' + escapeHtml(direct ? '原文朗读' : scenario.name) + '</span><small>' + formatDate(project.updated_at) + '</small><button type="button" class="card-rename-btn" data-rename-project="' + project.id + '" title="重命名项目" aria-label="重命名项目">✎</button></div><h3>' + escapeHtml(project.name) + '</h3><p>' + escapeHtml(direct ? '保留文章内容，直接生成音频' : project.description || project.client_name || scenario.name) + '</p>' + progressHtml + '<div class="meta">' + seriesBtn + tagBtn + '<span>' + project.document_count + ' 份素材</span><span>' + (project.verification_mode === 'source_only' ? '仅依据原文' : project.task_count + ' 项核验') + '</span>' + (durationMeta ? '<span>' + escapeHtml(durationMeta) + '</span>' : '') + '</div></div>'; }).join('');
   $$('[data-continue-open]', list).forEach(button => button.addEventListener('click', event => { event.stopPropagation(); openProjectTab(button.dataset.continueOpen, 'audio'); }));
   $$('[data-continue-start]', list).forEach(button => button.addEventListener('click', () => {
     const input = $('#quick-link-input');
@@ -325,6 +335,12 @@ function renderProjectList() {
     });
   });
   $$('.card-tag-btn', list).forEach(button => button.addEventListener('click', event => { event.stopPropagation(); openCollectionDialog(button.dataset.tagProject); }));
+  $$('[data-series-filter]', list).forEach(button => button.addEventListener('click', event => {
+    event.stopPropagation();
+    const series = button.dataset.seriesFilter;
+    appState.seriesFilter = appState.seriesFilter === series ? '' : series;
+    renderProjectList();
+  }));
   $$('[data-rename-project]', list).forEach(button => button.addEventListener('click', event => { event.stopPropagation(); openRenameDialog(button.dataset.renameProject); }));
 }
 
@@ -677,9 +693,11 @@ function renderProjectDetail() {
     preferenceBits.push('时长不设上限');
   }
   const preferenceText = preferenceBits.map(text => '<span>' + escapeHtml(text) + '</span>').join('');
-  detail.innerHTML = '<div class="detail-top"><div class="detail-header"><div><p class="eyebrow">' + escapeHtml(directListening ? '原文朗读' : scenario.name) + '</p><h2>' + escapeHtml(data.project.name) + '</h2><p>' + escapeHtml(directListening ? '保留文章内容，直接生成并收听音频。' : data.project.client_name || data.project.description || scenario.description) + '</p><div class="task-preferences"><button type="button" class="tag-edit-btn" id="edit-collection" title="归类到某个收藏夹">🏷 ' + ((data.project.collection || '').trim() ? escapeHtml(data.project.collection.trim()) : '收藏夹未设置 · 点击归类') + '</button>' + preferenceText + '</div></div><div class="detail-actions">' + '<button class="button button-outline button-small" id="back-to-projects">← 全部项目</button><button class="button button-outline button-small" id="export-project">导出到本机…</button><details class="more-menu"><summary class="button button-outline button-small">更多</summary><div class="more-menu-list"><button class="button button-quiet button-small" id="edit-collection-menu">归类到收藏夹</button><button class="button button-quiet button-small" id="rename-project">重命名项目</button><button class="button button-quiet button-small" id="reload-project">重新载入项目</button><button class="button button-danger button-small" id="delete-project">删除项目</button></div></details></div></div>' + '<div class="tabbar">' + tabHtml + '</div></div>' + renderWorkflowHint(data, state) + '<div id="detail-panel" class="detail-panel"></div>';
+  detail.innerHTML = '<div class="detail-top"><div class="detail-header"><div><p class="eyebrow">' + escapeHtml(directListening ? '原文朗读' : scenario.name) + '</p><h2>' + escapeHtml(data.project.name) + '</h2><p>' + escapeHtml(directListening ? '保留文章内容，直接生成并收听音频。' : data.project.client_name || data.project.description || scenario.description) + '</p><div class="task-preferences"><button type="button" class="tag-edit-btn" id="edit-collection" title="归类到某个收藏夹">🏷 ' + ((data.project.collection || '').trim() ? escapeHtml(data.project.collection.trim()) : '收藏夹未设置 · 点击归类') + '</button><button type="button" class="tag-edit-btn" id="edit-series" title="归入某个系列">📚 ' + ((data.project.series || '').trim() ? escapeHtml(data.project.series.trim()) : '系列未设置 · 点击归类') + '</button>' + preferenceText + '</div></div><div class="detail-actions">' + '<button class="button button-outline button-small" id="back-to-projects">← 全部项目</button><button class="button button-outline button-small" id="export-project">导出到本机…</button><details class="more-menu"><summary class="button button-outline button-small">更多</summary><div class="more-menu-list"><button class="button button-quiet button-small" id="edit-collection-menu">归类到收藏夹</button><button class="button button-quiet button-small" id="edit-series-menu">归类到系列</button><button class="button button-quiet button-small" id="rename-project">重命名项目</button><button class="button button-quiet button-small" id="reload-project">重新载入项目</button><button class="button button-danger button-small" id="delete-project">删除项目</button></div></details></div></div>' + '<div class="tabbar">' + tabHtml + '</div></div>' + renderWorkflowHint(data, state) + '<div id="detail-panel" class="detail-panel"></div>';
   $('#edit-collection')?.addEventListener('click', () => openCollectionDialog(data.project.id));
   $('#edit-collection-menu')?.addEventListener('click', () => openCollectionDialog(data.project.id));
+  $('#edit-series')?.addEventListener('click', () => openSeriesDialog(data.project.id));
+  $('#edit-series-menu')?.addEventListener('click', () => openSeriesDialog(data.project.id));
   $('#rename-project')?.addEventListener('click', () => openRenameDialog(data.project.id));
   $$('.tabbar button', detail).forEach(button => button.addEventListener('click', () => { appState.activeTab = button.dataset.tab; renderProjectDetail(); }));
   $$('[data-workflow-next]', detail).forEach(button => button.addEventListener('click', () => { appState.activeTab = button.dataset.workflowNext; renderProjectDetail(); $('#detail-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }));
@@ -757,6 +775,28 @@ function bindShelfControls() {
   $('#rename-form')?.addEventListener('submit', submitRename);
 }
 
+let seriesDialogProjectId = null;
+
+function openSeriesDialog(projectId) {
+  const project = appState.projects.find(item => item.id === projectId);
+  if (!project) return;
+  seriesDialogProjectId = projectId;
+  const current = (project.series || '').trim();
+  const existing = [...new Set(appState.projects.map(item => (item.series || '').trim()).filter(Boolean))];
+  $('#series-dialog-target').textContent = '「' + project.name + '」' + (current ? '当前在「' + current + '」' : '还没有归入系列');
+  const list = $('#series-chip-list');
+  list.innerHTML = existing.length ? existing.map((name, index) => '<button type="button" class="collection-chip' + (name === current ? ' active' : '') + '" data-series-index="' + index + '">' + escapeHtml(name) + '</button>').join('') : '<p class="form-note">还没有任何系列，直接在下面输入一个名字。</p>';
+  const form = $('#series-form');
+  $$('.collection-chip', list).forEach(chip => chip.addEventListener('click', () => {
+    const name = existing[Number(chip.dataset.seriesIndex)];
+    form.elements.series.value = form.elements.series.value.trim() === name ? '' : name;
+    $$('.collection-chip', list).forEach(item => item.classList.toggle('active', item === chip && form.elements.series.value.trim() === name));
+  }));
+  form.elements.series.value = current;
+  $('#series-remove').hidden = !current;
+  $('#series-dialog').showModal();
+}
+
 async function saveProjectCollection(projectId, value) {
   try {
     const updated = await request('/api/projects/' + projectId + '/collection', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ collection: value }) });
@@ -766,6 +806,17 @@ async function saveProjectCollection(projectId, value) {
     await loadProjects();
     if (appState.selectedProject?.project?.id === projectId) renderProjectDetail();
     showMessage(value ? '已归入「' + value + '」。' : '已从收藏夹移出。');
+  } catch (error) { showMessage(error.message, true); }
+}
+
+async function saveProjectSeries(projectId, value) {
+  try {
+    const updated = await request('/api/projects/' + projectId + '/series', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ series: value }) });
+    $('#series-dialog').close();
+    if (appState.selectedProject?.project?.id === projectId) appState.selectedProject.project = updated;
+    await loadProjects();
+    if (appState.selectedProject?.project?.id === projectId) renderProjectDetail();
+    showMessage(value ? '已归入系列「' + value + '」。' : '已从系列移出。');
   } catch (error) { showMessage(error.message, true); }
 }
 
@@ -2472,6 +2523,8 @@ function bindDialogs() {
   }
   $('#collection-form').addEventListener('submit', event => { event.preventDefault(); saveProjectCollection(collectionDialogProjectId, event.currentTarget.elements.collection.value.trim()); });
   $('#collection-remove').addEventListener('click', () => saveProjectCollection(collectionDialogProjectId, ''));
+  $('#series-form').addEventListener('submit', event => { event.preventDefault(); saveProjectSeries(seriesDialogProjectId, event.currentTarget.elements.series.value.trim()); });
+  $('#series-remove').addEventListener('click', () => saveProjectSeries(seriesDialogProjectId, ''));
   $('#new-project').addEventListener('click', () => {
     const existing = [...new Set(appState.projects.map(project => (project.collection || '').trim()).filter(Boolean))];
     const suggest = $('#collection-suggest');
@@ -2508,6 +2561,8 @@ function bindDialogs() {
       body.target_duration = Number(body.target_duration || 10);
       const sourceUrl = (body.source_url || '').trim();
       delete body.source_url;
+      const series = (body.series || '').trim();
+      delete body.series;
       const project = await request('/api/projects', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
       if (project?.duplicate && project.existing_project_id) {
         $('#project-dialog').close();
@@ -2526,6 +2581,9 @@ function bindDialogs() {
           try { await request('/api/projects/' + project.id, { method: 'DELETE' }); } catch (_) { /* 删除失败时保留原错误 */ }
           throw linkError;
         }
+      }
+      if (series) {
+        await request('/api/projects/' + project.id + '/series', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ series }) });
       }
       $('#project-dialog').close();
       formEl.reset();
@@ -2574,6 +2632,7 @@ function bindDialogs() {
       appState.providerApiKeys = config.api_keys || {};
       form.elements.allow_source_upload.checked = !!config.allow_source_upload;
       form.elements.output_directory.value = exportConfig.output_directory || exportConfig.default_directory || '';
+      form.elements.watch_directory.value = exportConfig.watch_directory || '';
       applyProviderPreset(form, false);
       $('#settings-dialog').showModal();
       checkForUpdates();
@@ -2591,8 +2650,9 @@ function bindDialogs() {
     const submit = $('button[type="submit"]', formEl);
     try {
       setBusy(submit, true, '保存中…');
-      const exportBody = { output_directory: body.output_directory || '' };
+      const exportBody = { output_directory: body.output_directory || '', watch_directory: body.watch_directory || '' };
       delete body.output_directory;
+      delete body.watch_directory;
       await Promise.all([
         request('/api/settings/provider', { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) }),
         request('/api/settings/export', { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(exportBody) }),
@@ -2608,13 +2668,36 @@ function bindDialogs() {
       setBusy(submit, false);
     }
   });
+  document.addEventListener('click', async event => {
+    if (event.target.id !== 'run-watch-scan') return;
+    const button = event.target;
+    const form = $('#settings-form');
+    try {
+      setBusy(button, true, '扫描中…');
+      await request('/api/settings/export', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ output_directory: form.elements.output_directory.value.trim(), watch_directory: form.elements.watch_directory.value.trim() }),
+      });
+      const result = await request('/api/settings/watch/run', { method: 'POST' });
+      const importedCount = (result.imported || []).length;
+      const failedCount = (result.failed || []).length;
+      const failedDetail = failedCount ? '，' + (result.failed[0]?.error || '部分文件解析失败') : '';
+      await loadProjects();
+      showMessage('扫描完成：导入 ' + importedCount + ' 份素材，失败 ' + failedCount + ' 个文件' + failedDetail + '。', failedCount > 0);
+    } catch (error) {
+      showMessage(error.message, true);
+    } finally {
+      if (button.isConnected) setBusy(button, false);
+    }
+  });
   $('#provider-preset').addEventListener('change', event => applyProviderPreset($('#settings-form'), event.target.value !== 'custom'));
   $('#test-provider').addEventListener('click', async event => {
     const button = event.currentTarget; const result = $('#provider-test-result');
     try {
       setBusy(button, true, '保存并测试…');
       const form = $('#settings-form'); const body = Object.fromEntries(new FormData(form)); body.allow_source_upload = form.elements.allow_source_upload.checked;
-      const exportBody = {output_directory: body.output_directory || ''}; delete body.output_directory;
+      const exportBody = {output_directory: body.output_directory || '', watch_directory: body.watch_directory || ''}; delete body.output_directory; delete body.watch_directory;
       await Promise.all([request('/api/settings/provider', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)}), request('/api/settings/export', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(exportBody)})]);
       await refreshProviderApiKeys();
       const test = await request('/api/settings/provider/test', {method:'POST'});
@@ -2633,7 +2716,7 @@ function bindDialogs() {
     try {
       setBusy(button, true, '保存并合成…');
       const form = $('#settings-form'); const body = Object.fromEntries(new FormData(form)); body.allow_source_upload = form.elements.allow_source_upload.checked;
-      const exportBody = {output_directory: body.output_directory || ''}; delete body.output_directory;
+      const exportBody = {output_directory: body.output_directory || '', watch_directory: body.watch_directory || ''}; delete body.output_directory; delete body.watch_directory;
       await Promise.all([request('/api/settings/provider', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)}), request('/api/settings/export', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(exportBody)})]);
       await refreshProviderApiKeys();
       const response = await request('/api/settings/tts/test', {method:'POST'});

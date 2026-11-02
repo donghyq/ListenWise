@@ -648,6 +648,9 @@ body { background-color: var(--linen); background-image: url("data:image/svg+xml
 .card-tag-btn { display: inline-flex; align-items: center; margin-right: auto; padding: 3px 12px; border: 1px solid transparent; border-radius: 999px; background: #ece5d2; color: #6d6249; font-size: 11.5px; letter-spacing: 0.05em; }
 .card-tag-btn:hover { border-color: var(--moss); color: var(--moss-dark); background: #f1ecdd; }
 .card-tag-btn.untagged { border: 1px dashed #c9bfa6; background: transparent; color: #a2957a; }
+.card-series-btn { display: inline-flex; align-items: center; padding: 3px 12px; border: 1px solid #d8dcc8; border-radius: 999px; background: #f4f2e3; color: #66704f; font-size: 11.5px; letter-spacing: 0.05em; }
+.card-series-btn:hover { border-color: var(--moss); color: var(--moss-dark); }
+.card-series-btn.active { background: var(--moss); border-color: var(--moss); color: #fff; }
 .collection-chip-list { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 16px; }
 .collection-chip-list:empty { display: none; }
 .tag-edit-btn { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; border: 1px solid #ddd5c2; border-radius: 999px; background: transparent; color: #6d6249; font-size: 12px; letter-spacing: 0.05em; }
