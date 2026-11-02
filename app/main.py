@@ -787,6 +787,12 @@ def init_db() -> None:
             expires_at TEXT NOT NULL,
             revoked_at TEXT
         );
+        CREATE TABLE IF NOT EXISTS mobile_library_shares (
+            token TEXT PRIMARY KEY,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            revoked_at TEXT
+        );
         CREATE TABLE IF NOT EXISTS style_profiles (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
@@ -6436,6 +6442,164 @@ def mobile_share_qr(project_id: str, url: str):
     if share is None or url.split("/m/")[-1] != share["token"]:
         raise HTTPException(404, "链接不存在或已失效。")
     return Response(content=share_qr_svg(url), media_type="image/svg+xml")
+
+
+def valid_library_share(conn: sqlite3.Connection, token: str):
+    row = conn.execute("SELECT * FROM mobile_library_shares WHERE token = ?", (token,)).fetchone()
+    if row is None or row["revoked_at"] is not None or row["expires_at"] <= now_iso():
+        return None
+    return row
+
+
+def library_books(conn: sqlite3.Connection) -> list[dict]:
+    """书架上可领取的书：至少有一段已生成音频的项目。"""
+    rows = conn.execute(
+        """SELECT p.id AS project_id, p.name AS name, p.updated_at AS updated_at,
+                  COUNT(a.id) AS chapters, COALESCE(SUM(a.duration_seconds), 0) AS total_seconds
+           FROM projects p JOIN audio_outputs a ON a.project_id = p.id
+           WHERE a.status = 'ready' AND a.audio_path != ''
+           GROUP BY p.id HAVING COUNT(a.id) > 0
+           ORDER BY p.updated_at DESC"""
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def library_share_payload(conn: sqlite3.Connection):
+    share = conn.execute("SELECT * FROM mobile_library_shares WHERE revoked_at IS NULL AND expires_at > ? ORDER BY created_at DESC LIMIT 1", (now_iso(),)).fetchone()
+    books = library_books(conn)
+    if share is None:
+        return {"active": False, "book_count": len(books)}
+    return {"active": True, "token": share["token"], "path": f"/m/library/{share['token']}",
+            "expires_at": share["expires_at"], "lan_ip": local_lan_ip(), "book_count": len(books)}
+
+
+@app.post("/api/mobile-library/share")
+def create_library_share():
+    """书架领取链接：一次扫码可打开全部有声书。重新生成自动吊销旧链接。"""
+    timestamp = now_iso()
+    conn = db()
+    conn.execute("UPDATE mobile_library_shares SET revoked_at = ? WHERE revoked_at IS NULL", (timestamp,))
+    token = secrets.token_urlsafe(18)
+    expires_at = (datetime.now(timezone.utc).astimezone() + MOBILE_SHARE_TTL).isoformat(timespec="seconds")
+    conn.execute(
+        "INSERT INTO mobile_library_shares (token, created_at, expires_at) VALUES (?, ?, ?)",
+        (token, timestamp, expires_at),
+    )
+    conn.commit()
+    payload = library_share_payload(conn)
+    conn.close()
+    return payload
+
+
+@app.get("/api/mobile-library/share")
+def get_library_share():
+    conn = db()
+    payload = library_share_payload(conn)
+    conn.close()
+    return payload
+
+
+@app.delete("/api/mobile-library/share")
+def revoke_library_share():
+    timestamp = now_iso()
+    conn = db()
+    conn.execute("UPDATE mobile_library_shares SET revoked_at = ? WHERE revoked_at IS NULL", (timestamp,))
+    conn.commit()
+    conn.close()
+    return {"revoked": True}
+
+
+@app.get("/api/mobile-library/qr")
+def library_share_qr(url: str):
+    conn = db()
+    share = conn.execute("SELECT token FROM mobile_library_shares WHERE revoked_at IS NULL AND expires_at > ? ORDER BY created_at DESC LIMIT 1", (now_iso(),)).fetchone()
+    conn.close()
+    if share is None or url.split("/m/library/")[-1] != share["token"]:
+        raise HTTPException(404, "书架链接不存在或已失效。")
+    return Response(content=share_qr_svg(url), media_type="image/svg+xml")
+
+
+@app.get("/m/{token}/library-hint")
+def mobile_library_hint(token: str):
+    """单书页用它判断是否展示「书架里的其他书」；未生成书架分享时 404，前端静默隐藏。"""
+    conn = db()
+    if valid_mobile_share(conn, token) is None:
+        conn.close()
+        raise HTTPException(404, "链接不存在或已失效。")
+    share = conn.execute("SELECT * FROM mobile_library_shares WHERE revoked_at IS NULL AND expires_at > ? ORDER BY created_at DESC LIMIT 1", (now_iso(),)).fetchone()
+    books = library_books(conn)
+    conn.close()
+    if share is None:
+        raise HTTPException(404, "尚未生成书架分享。")
+    return {"library_url": f"/m/library/{share['token']}", "book_count": max(0, len(books) - 1)}
+
+
+@app.get("/m/library/{token}")
+def mobile_library_page(token: str):
+    conn = db()
+    share = valid_library_share(conn, token)
+    conn.close()
+    if share is None:
+        return mobile_share_error_page("书架链接不存在或已失效。")
+    return FileResponse(STATIC_DIR / "mobile.html", media_type="text/html")
+
+
+@app.get("/m/library/{token}/data")
+def mobile_library_data(token: str):
+    conn = db()
+    share = valid_library_share(conn, token)
+    if share is None:
+        conn.close()
+        raise HTTPException(404, "书架链接不存在或已失效。")
+    books = library_books(conn)
+    conn.close()
+    return {"books": books}
+
+
+@app.get("/m/library/{token}/book/{project_id}")
+def mobile_library_book_page(token: str, project_id: str):
+    conn = db()
+    share = valid_library_share(conn, token)
+    conn.close()
+    if share is None:
+        return mobile_share_error_page("书架链接不存在或已失效。")
+    return FileResponse(STATIC_DIR / "mobile.html", media_type="text/html")
+
+
+@app.get("/m/library/{token}/book/{project_id}/data")
+def mobile_library_book_data(token: str, project_id: str):
+    conn = db()
+    share = valid_library_share(conn, token)
+    if share is None:
+        conn.close()
+        raise HTTPException(404, "书架链接不存在或已失效。")
+    if not any(book["project_id"] == project_id for book in library_books(conn)):
+        conn.close()
+        raise HTTPException(404, "这本书不在书架中或还没有可收听的音频。")
+    try:
+        return build_mobile_book(conn, project_id)
+    finally:
+        conn.close()
+
+
+@app.get("/m/library/{token}/book/{project_id}/audio/{audio_id}")
+def mobile_library_audio_stream(token: str, project_id: str, audio_id: str, download: int = 0):
+    conn = db()
+    share = valid_library_share(conn, token)
+    if share is None:
+        conn.close()
+        raise HTTPException(404, "书架链接不存在或已失效。")
+    row = conn.execute(
+        "SELECT audio_path FROM audio_outputs WHERE id = ? AND project_id = ? AND status = 'ready'",
+        (audio_id, project_id),
+    ).fetchone()
+    conn.close()
+    if row is None or not row["audio_path"] or not Path(row["audio_path"]).is_file():
+        raise HTTPException(404, "音频尚未生成或已被移动。")
+    path = Path(row["audio_path"])
+    if download:
+        return FileResponse(path, media_type="audio/mpeg", filename=path.name)
+    return FileResponse(path, media_type="audio/mpeg")
 
 
 @app.get("/m/icon-180.png")

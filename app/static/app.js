@@ -1868,6 +1868,8 @@ async function generateNarrative(outlineId, button) {
             line.textContent = '正在写第 ' + progress.current + ' / ' + progress.total + ' 节：' + progress.heading;
           } else if (progress.status === 'done') {
             stopPoll(); resolve();
+          } else if (progress.status === 'interrupted') {
+            stopPoll(); reject(new Error((progress.message || '上次生成已中断') + '。点通知中的「重试」继续，已完成章节不会重写。'));
           } else if (progress.status === 'error') {
             stopPoll(); reject(new Error(progress.message || '生成失败，请稍后重试。'));
           }
@@ -1941,7 +1943,8 @@ function renderAudioPanel() {
   const audiobookCard = audiobookReady ? '<details class="panel-card audio-extra"><summary>需要把多章音频合成一本有声书？</summary><p>有声书（M4B）把已确认讲稿的各章合为一个文件，并保留章节标记。单篇原文朗读直接导出 MP3 即可。</p><button class="button button-outline button-small" id="export-audiobook">合成有声书 M4B</button></details>' : '';
   const mobileGuide = outputs.some(item => item.audio_available) ? '<details class="panel-card audio-extra"><summary>如何在 iPhone 收听？</summary><p>希望在“图书”中按章收听：先在 Mac“图书”中通过“文件 → 导入”添加 M4B，再连接 iPhone，在访达中选择有声书同步。首次同步前请核对访达提示。</p><p>只想快速带到手机：导出 MP3，通过隔空投送或 iCloud 云盘存入 iPhone“文件”后播放。声息目前不会同步两端的播放进度。</p></details>' : '';
   const sendMobile = outputs.some(item => item.audio_available) ? '<details class="panel-card audio-extra" id="mobile-share-card"><summary>发送到手机收听</summary><p>生成临时领取链接（7 天有效）后，用手机相机扫码，即可在同一 Wi-Fi 下按章收听和下载。链接只在声息运行时可访问，可随时吊销。</p><div class="audio-tool-actions"><button class="button button-outline button-small" id="create-mobile-share">生成二维码</button><button class="button button-quiet button-small" id="revoke-mobile-share">吊销已生成的链接</button></div><div id="mobile-share-result" class="mobile-share-result"></div></details>' : '';
-  const sourceCard = contents.length ? '<details class="panel-card audio-extra"' + (outputs.length ? '' : ' open') + '><summary>从已确认讲稿制作新音频</summary><p>可制作整篇音频，也可逐章制作。未确认的讲稿可先整理脚本试听。</p><label class="audio-naturalize"><input type="checkbox" id="naturalize-audio"/><span>使用文本模型改善口语节奏<span class="audio-naturalize-note">额外调用一次模型；生成后仍需核对事实</span></span></label><div class="audio-source-list">' + contents.map(renderAudioSourceRow).join('') + '</div></details>' : '';
+  const libraryCard = outputs.some(item => item.audio_available) ? '<details class="panel-card audio-extra" id="library-share-card"><summary>书架二维码（一次带出全部书）</summary><p>生成书架领取链接后，手机一次扫码即可打开书架上的全部有声书，逐本收听。链接有效期与单书链接相同，可随时吊销。</p><div class="audio-tool-actions"><button class="button button-outline button-small" id="create-library-share">生成书架二维码</button><button class="button button-quiet button-small" id="revoke-library-share">吊销书架链接</button></div><div id="library-share-result" class="mobile-share-result"></div></details>' : '';
+  const sourceCard = contents.length ? '<details class="panel-card audio-extra"'  + (outputs.length ? '' : ' open') + '><summary>从已确认讲稿制作新音频</summary><p>可制作整篇音频，也可逐章制作。未确认的讲稿可先整理脚本试听。</p><label class="audio-naturalize"><input type="checkbox" id="naturalize-audio"/><span>使用文本模型改善口语节奏<span class="audio-naturalize-note">额外调用一次模型；生成后仍需核对事实</span></span></label><div class="audio-source-list">' + contents.map(renderAudioSourceRow).join('') + '</div></details>' : '';
   const empty = contents.length ? '请在下方选择讲稿，先生成音频脚本。' : ((appState.selectedProject.documents || []).length ? '讲稿还没有生成。去「大纲」确认章节后会自动成稿，或点每章的“向 AI 提修改意见”调整。' : '还没有素材。先在「素材」导入文章。');
   const standalone = outputs.filter(output => {
     const content = contents.find(c => c.id === output.narrative_content_id);
@@ -1960,7 +1963,7 @@ function renderAudioPanel() {
     : directOutputs.length
       ? '<section class="panel-card audio-intro"><h3>原文朗读</h3><p>' + (directOutputs.some(output => output.audio_available) ? '整篇音频已生成，可直接试听、导出或发送到手机。如需分章收听，可切换到「播客风改写（可选）」。' : '原文朗读不拆分章节；生成整篇音频后即可试听、导出或发送到手机。') + '</p></section>'
       : '';
-  panel.innerHTML = hero + listeningIntro + chapterBooks + (standalone.length ? '<section class="panel-card"><h3>原文朗读与整篇音频</h3><div class="audio-output-list">' + renderAudioGroups(standalone) + '</div></section>' : contents.length ? '' : '<section class="panel-card"><p>' + empty + '</p></section>') + sendMobile + mobileGuide + sourceCard + audiobookCard;
+  panel.innerHTML = hero + listeningIntro + chapterBooks + (standalone.length ? '<section class="panel-card"><h3>原文朗读与整篇音频</h3><div class="audio-output-list">' + renderAudioGroups(standalone) + '</div></section>' : contents.length ? '' : '<section class="panel-card"><p>' + empty + '</p></section>') + sendMobile + libraryCard + mobileGuide + sourceCard + audiobookCard;
   // 先绑定初始阅读面；若下方播放器选定章节，syncStudioReader 会替换
   // #chapter-reader-slot 并只对该插槽重新绑定，避免重复监听。
   bindNarrativeContentEvents();
@@ -1977,6 +1980,9 @@ function renderAudioPanel() {
   }
   const createShare = $('#create-mobile-share'); if (createShare) createShare.addEventListener('click', () => createMobileShare(createShare));
   const revokeShare = $('#revoke-mobile-share'); if (revokeShare) revokeShare.addEventListener('click', () => revokeMobileShare(revokeShare));
+  const createLibrary = $('#create-library-share'); if (createLibrary) createLibrary.addEventListener('click', () => createLibraryShare(createLibrary));
+  const revokeLibrary = $('#revoke-library-share'); if (revokeLibrary) revokeLibrary.addEventListener('click', () => revokeLibraryShare(revokeLibrary));
+  if ($('#library-share-card')) refreshLibraryShareStatus();
   $$('[data-save-audio]').forEach(button => button.addEventListener('click', () => saveAudioScript(button.dataset.saveAudio, button)));
   $$('[data-preview-audio]').forEach(button => button.addEventListener('click', () => previewAudio(button.dataset.previewAudio, button)));
   $$('[data-create-audio-script]').forEach(button => button.addEventListener('click', () => createAudioScript(button.dataset.createAudioScript, button)));
@@ -2372,6 +2378,47 @@ async function speakAudioScript(audioId, button) {
   } catch (error) { showMessage(error.message, true); }
 }
 
+async function renderLibraryShareResult(result) {
+  const box = $('#library-share-result');
+  if (!box) return;
+  if (!result || !result.active) { box.innerHTML = ''; return; }
+  const port = window.location.port ? ':' + window.location.port : '';
+  const url = 'http://' + result.lan_ip + port + result.path;
+  const expiry = new Date(result.expires_at).toLocaleString('zh-CN', { hour12: false });
+  const loopback = !result.lan_ip || /^(127\.|localhost$)/.test(result.lan_ip);
+  let html = '<img class="mobile-share-qr" alt="书架收听二维码" src="/api/mobile-library/qr?url=' + encodeURIComponent(url) + '" />';
+  html += '<p class="mobile-share-url"><a href="' + escapeHtml(url) + '">' + escapeHtml(url) + '</a></p>';
+  if (loopback) html += '<p class="form-note mobile-share-warn">没有检测到可用的局域网地址，手机扫码可能打不开。请确认电脑已连接 Wi-Fi 后重新生成。</p>';
+  html += '<div class="audio-tool-actions"><button type="button" class="button button-outline button-small" id="copy-library-share-link">复制链接</button></div>';
+  html += '<p class="form-note">书架链接 ' + result.book_count + ' 本书 · 7 天内有效（至 ' + escapeHtml(expiry) + '），只在声息运行、手机与电脑连同一个 Wi-Fi 时可访问。重新生成会自动作废旧链接。</p>';
+  box.innerHTML = html;
+  $('#copy-library-share-link')?.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(url); showMessage('书架链接已复制。'); } catch (_) { window.prompt('复制下面的链接：', url); }
+  });
+}
+
+async function refreshLibraryShareStatus() {
+  try { renderLibraryShareResult(await request('/api/mobile-library/share')); } catch (_) { /* 未上线或失败时保持空 */ }
+}
+
+async function createLibraryShare(button) {
+  try {
+    setBusy(button, true, '生成中…');
+    const result = await request('/api/mobile-library/share', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+    await renderLibraryShareResult(result);
+    showMessage('书架二维码已生成，手机一次扫码可听全部书。');
+  } catch (error) { showMessage(error.message, true); } finally { setBusy(button, false); }
+}
+
+async function revokeLibraryShare(button) {
+  try {
+    setBusy(button, true, '吊销中…');
+    await request('/api/mobile-library/share', { method: 'DELETE' });
+    const box = $('#library-share-result');
+    if (box) box.innerHTML = '<p class="form-note">已吊销。之前的书架链接立即失效。</p>';
+  } catch (error) { showMessage(error.message, true); } finally { setBusy(button, false); }
+}
+
 async function createMobileShare(button) {
   try {
     setBusy(button, true, '生成中…');
@@ -2503,6 +2550,21 @@ async function loadUsageSummary() {
       $('.dialog-header', form).after(line);
     }
     line.textContent = '本机累计调用 ' + calls.toLocaleString('zh-CN') + ' 次 · 输入 ' + inputTokens.toLocaleString('zh-CN') + ' tokens · 输出 ' + outputTokens.toLocaleString('zh-CN') + ' tokens';
+    try {
+      const diag = await request('/api/diagnostics');
+      let diagLine = $('#diagnostics-line', form);
+      if (!diagLine) {
+        diagLine = document.createElement('details');
+        diagLine.id = 'diagnostics-line';
+        diagLine.className = 'usage-summary';
+        line.after(diagLine);
+      }
+      const providerReady = diag.provider?.configured ? '模型已配置' : '模型未配置';
+      const ffmpeg = diag.ffmpeg_available ? 'FFmpeg 可用' : '缺少 FFmpeg';
+      const errorCount = (diag.recent_errors || []).length;
+      diagLine.innerHTML = '<summary>诊断：' + providerReady + ' · ' + ffmpeg + ' · 近期错误 ' + errorCount + ' 条</summary>'
+        + '<pre style="white-space:pre-wrap;font-size:11px;color:#516258;margin:6px 0 0;">' + escapeHtml(JSON.stringify({ version: diag.version, data_dir: diag.data_dir, provider: diag.provider, tts: diag.tts, recent_errors: diag.recent_errors, jobs: diag.jobs }, null, 2)) + '</pre>';
+    } catch (_) { /* 诊断接口未上线时不显示 */ }
   } catch (_) { /* 新接口尚未上线时不显示这一行 */ }
 }
 
@@ -2628,9 +2690,10 @@ function bindDialogs() {
         }
       }
       const defaultTts = /Mac/i.test(navigator.platform) ? 'macos_say' : /Win/i.test(navigator.platform) ? 'windows_sapi' : 'compatible';
-      ['provider_preset','provider_name','base_url','model_name','api_key','tts_base_url','tts_model','tts_voice','tts_api_key','tts_provider','tts_speed','tts_instructions','asr_base_url','asr_model','asr_api_key'].forEach(key => { form.elements[key].value = config[key] ?? (key === 'provider_preset' ? 'openai' : key === 'tts_provider' ? defaultTts : key === 'tts_speed' ? '1' : ''); });
+      ['provider_preset','provider_name','base_url','model_name','api_key','tts_base_url','tts_model','tts_voice','tts_api_key','tts_provider','tts_speed','tts_instructions','asr_base_url','asr_model','asr_api_key','audio_intro_text','audio_outro_text'].forEach(key => { form.elements[key].value = config[key] ?? (key === 'provider_preset' ? 'openai' : key === 'tts_provider' ? defaultTts : key === 'tts_speed' ? '1' : ''); });
       appState.providerApiKeys = config.api_keys || {};
       form.elements.allow_source_upload.checked = !!config.allow_source_upload;
+      form.elements.audio_post_enabled.checked = config.audio_post_enabled !== false;
       form.elements.output_directory.value = exportConfig.output_directory || exportConfig.default_directory || '';
       form.elements.watch_directory.value = exportConfig.watch_directory || '';
       applyProviderPreset(form, false);
@@ -2647,6 +2710,7 @@ function bindDialogs() {
     const form = new FormData(formEl);
     const body = Object.fromEntries(form);
     body.allow_source_upload = formEl.elements.allow_source_upload.checked;
+    body.audio_post_enabled = formEl.elements.audio_post_enabled.checked;
     const submit = $('button[type="submit"]', formEl);
     try {
       setBusy(submit, true, '保存中…');
@@ -2696,7 +2760,7 @@ function bindDialogs() {
     const button = event.currentTarget; const result = $('#provider-test-result');
     try {
       setBusy(button, true, '保存并测试…');
-      const form = $('#settings-form'); const body = Object.fromEntries(new FormData(form)); body.allow_source_upload = form.elements.allow_source_upload.checked;
+      const form = $('#settings-form'); const body = Object.fromEntries(new FormData(form)); body.allow_source_upload = form.elements.allow_source_upload.checked; body.audio_post_enabled = form.elements.audio_post_enabled.checked; body.audio_post_enabled = form.elements.audio_post_enabled.checked;
       const exportBody = {output_directory: body.output_directory || '', watch_directory: body.watch_directory || ''}; delete body.output_directory; delete body.watch_directory;
       await Promise.all([request('/api/settings/provider', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)}), request('/api/settings/export', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(exportBody)})]);
       await refreshProviderApiKeys();
