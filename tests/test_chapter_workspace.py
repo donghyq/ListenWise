@@ -201,6 +201,59 @@ class ChapterWorkspaceTest(unittest.TestCase):
         self.assertIn('短标题正文', exported)
         self.assertNotIn('长标题正文', exported)
 
+    def test_delete_and_prune_narrative_drafts_keep_confirmed_version(self):
+        project, source, outline_id, confirmed_id, _ = self.make_book()
+        blocks = self.client.get('/api/documents/' + source['id']).json()['blocks']
+        ids = [b['id'] for b in blocks if b['kind'] == 'paragraph']
+        # Only 1 narrative content initially -> cannot delete last one
+        only_del = self.client.delete('/api/narrative-contents/' + confirmed_id)
+        self.assertEqual(only_del.status_code, 400)
+
+        # Add two pending_review drafts
+        for idx in (1, 2):
+            resp = self.client.post(f"/api/projects/{project['id']}/skill-host-contents", json={
+                'document_id': source['id'],
+                'title': f'草稿 {idx}',
+                'markdown': f'# 草稿 {idx}\n\n## 背景\n\n草稿正文 {idx}。',
+                'source_block_ids': ids,
+            })
+            self.assertEqual(resp.status_code, 201, resp.text)
+        contents = self.state(project)['narrative_contents']
+        self.assertEqual(len(contents), 3)
+
+        # Delete one draft explicitly
+        draft_id = next(c['id'] for c in contents if c['id'] != confirmed_id)
+        self.assertEqual(self.client.delete('/api/narrative-contents/' + draft_id).status_code, 204)
+        self.assertEqual(len(self.state(project)['narrative_contents']), 2)
+
+        # Prune remaining unconfirmed drafts -> only confirmed_id remains
+        pruned = self.client.post(f"/api/projects/{project['id']}/narrative-contents/prune")
+        self.assertEqual(pruned.status_code, 200)
+        self.assertEqual(pruned.json(), {'deleted': 1, 'remaining': 1})
+        remaining = self.state(project)['narrative_contents']
+        self.assertEqual([c['id'] for c in remaining], [confirmed_id])
+
+    def test_preview_first_section_seeds_resumable_job(self):
+        project, source, outline_id, _, _ = self.make_book()
+        with patch.object(self.main, 'model_chat', return_value='第一章试听正文内容。') as model, \
+             patch.object(self.main, 'generate_podcast_opening', return_value='播客开场白。'):
+            preview = self.client.post(f'/api/narrative-outlines/{outline_id}/preview-first')
+        self.assertEqual(preview.status_code, 200, preview.text)
+        data = preview.json()
+        self.assertEqual(data['heading'], '背景')
+        self.assertIn('第一章试听正文内容', data['body'])
+        self.assertEqual(model.call_count, 1)
+
+        # Resuming full generation should skip section 1 and only call model_chat for section 2
+        with patch.object(self.main, 'model_chat', return_value='第二章续写正文内容。') as resume_model, \
+             patch.object(self.main, 'generate_podcast_opening', return_value='播客开场白。'):
+            full = self.client.post(f'/api/narrative-outlines/{outline_id}/contents')
+        self.assertEqual(full.status_code, 201, full.text)
+        self.assertEqual(resume_model.call_count, 1)
+        full_md = full.json()['markdown']
+        self.assertIn('第一章试听正文内容', full_md)
+        self.assertIn('第二章续写正文内容', full_md)
+
 
 if __name__ == '__main__':
     unittest.main()

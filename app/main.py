@@ -4801,6 +4801,80 @@ def narrative_generation_progress(outline_id: str):
     return progress
 
 
+@app.post("/api/narrative-outlines/{outline_id}/preview-first")
+def preview_first_narrative_section(outline_id: str, synthesize: bool = False):
+    """先生成大纲第 1 章（并写入 generation_jobs 供后续全篇续写复用），可选直接合成第 1 章试听音频。"""
+    conn = db()
+    row = conn.execute("SELECT * FROM narrative_outlines WHERE id = ?", (outline_id,)).fetchone()
+    conn.close()
+    if row is None:
+        raise HTTPException(status_code=404, detail="知识转译大纲不存在。")
+    if row["status"] != "confirmed":
+        raise HTTPException(status_code=400, detail="请先确认写作大纲，再生成试听。")
+    outline = parse_json(row["outline_json"], {})
+    sections = outline.get("sections") or []
+    if not sections:
+        raise HTTPException(status_code=400, detail="大纲中没有可用的章节。")
+    first_section = sections[0]
+    source_ids = parse_json(row["source_block_ids_json"], [])
+    blocks = read_project_blocks(row["project_id"], source_ids)
+    if {block["id"] for block in blocks} != set(source_ids):
+        raise HTTPException(409, "所选材料已变更，请重新确认大纲后再生成。")
+    project = project_or_404(row["project_id"])
+    preferences = project_preferences(project)
+    outline.update({"minimum_output_mode": preferences["minimum_output_mode"], "minimum_output_ratio": preferences["minimum_output_ratio"]})
+    outline_hash = hashlib.sha256(json.dumps(outline, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+    first_outline = {**outline, "sections": [first_section]}
+    markdown, section_sources, model_metadata = generate_narrative_markdown(
+        first_outline,
+        blocks,
+        row["audience"],
+        row["style_profile"],
+        outline.get("transform_mode", preferences["transform_mode"]),
+        preferences["scenario"],
+        max(1, round(first_section.get("target_words", 800) / 240)),
+        outline.get("web_research_mode", preferences["web_research_mode"]),
+        progress_key=outline_id + ":preview",
+        reviewer_guidance=build_reviewer_guidance(row["project_id"]),
+    )
+    body_text = re.sub(r"^(?:#{1,6}[ \t]+[^\n]*\r?\n+)+", "", markdown.strip()).strip()
+    completed_sections = {str(first_section["id"]): body_text}
+    timestamp = now_iso()
+    total = len(sections)
+    with db() as conn:
+        conn.execute("DELETE FROM generation_jobs WHERE outline_id = ?", (outline_id,))
+        conn.execute(
+            "INSERT INTO generation_jobs (outline_id, status, total, current, heading, message, sections_json, outline_hash, created_at, updated_at) VALUES (?, 'interrupted', ?, 1, ?, '已完成第 1 章试听，点击生成即可从第 2 章继续。', ?, ?, ?, ?)",
+            (outline_id, total, first_section.get("heading", ""), json.dumps(completed_sections, ensure_ascii=False), outline_hash, timestamp, timestamp),
+        )
+    content_id = str(uuid.uuid4())
+    with db() as conn:
+        conn.execute(
+            """INSERT INTO narrative_contents (id, outline_id, project_id, document_id, title, markdown, section_sources_json, model_json, status, review_note, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending_review', '第 1 章试听草稿（其余章节待续写）', ?, ?)""",
+            (content_id, outline_id, row["project_id"], row["document_id"], outline["title"], markdown, json.dumps(section_sources, ensure_ascii=False), json.dumps(model_metadata, ensure_ascii=False), timestamp, timestamp),
+        )
+        conn.execute("UPDATE projects SET updated_at = ? WHERE id = ?", (timestamp, row["project_id"]))
+    audio_info = None
+    if synthesize and project.get("audio_enabled"):
+        try:
+            script_row = create_audio_script(row["project_id"], AudioScriptRequest(narrative_content_id=content_id, section_heading=first_section.get("heading", "")))
+            with db() as conn:
+                output_row = conn.execute("SELECT * FROM audio_outputs WHERE id = ?", (script_row["id"],)).fetchone()
+            if output_row is not None:
+                audio_info = finish_audio_output(output_row, get_internal_provider_settings())
+        except HTTPException as exc:
+            audio_info = {"error": str(exc.detail)}
+    return {
+        "content_id": content_id,
+        "outline_id": outline_id,
+        "heading": first_section.get("heading", ""),
+        "body": body_text,
+        "total_sections": total,
+        "audio": audio_info,
+    }
+
+
 @app.post("/api/narrative-outlines/{outline_id}/contents", status_code=201)
 def generate_narrative_content(outline_id: str, background: bool = False):
     if background:
@@ -5151,6 +5225,50 @@ def update_narrative_content(content_id: str, payload: NarrativeContentUpdate):
     conn.commit()
     conn.close()
     return {"id": content_id, "markdown": payload.markdown, "review_note": payload.review_note, "status": payload.status, "updated_at": timestamp}
+
+
+@app.delete("/api/narrative-contents/{content_id}", status_code=204)
+def delete_narrative_content(content_id: str):
+    """删除指定的讲稿版本；若项目仅剩唯一一份讲稿则拒绝删除。"""
+    conn = db()
+    content = conn.execute("SELECT id, project_id FROM narrative_contents WHERE id = ?", (content_id,)).fetchone()
+    if content is None:
+        conn.close()
+        raise HTTPException(status_code=404, detail="讲稿不存在。")
+    total = conn.execute("SELECT COUNT(*) FROM narrative_contents WHERE project_id = ?", (content["project_id"],)).fetchone()[0]
+    if total <= 1:
+        conn.close()
+        raise HTTPException(status_code=400, detail="至少保留一份讲稿，不能删除最后一份。")
+    conn.execute("DELETE FROM narrative_contents WHERE id = ?", (content_id,))
+    conn.execute("UPDATE projects SET updated_at = ? WHERE id = ?", (now_iso(), content["project_id"]))
+    conn.commit()
+    conn.close()
+    return Response(status_code=204)
+
+
+@app.post("/api/projects/{project_id}/narrative-contents/prune")
+def prune_unconfirmed_narrative_contents(project_id: str):
+    """清理项目下未确认的多余历史讲稿草稿，保留已确认版本（或最新一份）。"""
+    project_or_404(project_id)
+    conn = db()
+    rows = conn.execute(
+        "SELECT id, status FROM narrative_contents WHERE project_id = ? ORDER BY CASE WHEN status = 'confirmed' THEN 0 ELSE 1 END, updated_at DESC, rowid DESC",
+        (project_id,),
+    ).fetchall()
+    if len(rows) <= 1:
+        conn.close()
+        return {"deleted": 0, "remaining": len(rows)}
+    keep_ids = {row["id"] for row in rows if row["status"] == "confirmed"}
+    if not keep_ids:
+        keep_ids = {rows[0]["id"]}
+    delete_ids = [row["id"] for row in rows if row["id"] not in keep_ids]
+    for cid in delete_ids:
+        conn.execute("DELETE FROM narrative_contents WHERE id = ?", (cid,))
+    if delete_ids:
+        conn.execute("UPDATE projects SET updated_at = ? WHERE id = ?", (now_iso(), project_id))
+    conn.commit()
+    conn.close()
+    return {"deleted": len(delete_ids), "remaining": len(rows) - len(delete_ids)}
 
 
 @app.put("/api/narrative-contents/{content_id}/progress")
@@ -6167,12 +6285,8 @@ from app.chatgpt_mcp import create_lawflow_mcp
 MOBILE_SHARE_TTL = timedelta(days=7)
 
 
-def local_lan_ip() -> str:
-    """探测本机局域网 IP（UDP connect 不会真正发包）。
-
-    优先返回家用/办公网段（192.168 > 10.x > 172.16-31），跳过 VPN 虚拟网段（如 198.18/15）；
-    没有 RFC1918 地址时，接受默认路由所在网卡的非回环地址（如企业网的 11.x）。
-    """
+def local_lan_ips() -> list[str]:
+    """返回本机按优先级排序的全部可用局域网 IPv4 地址候选列表。"""
     probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     candidates: list[str] = []
     try:
@@ -6186,8 +6300,6 @@ def local_lan_ip() -> str:
     except OSError:
         pass
     probe.close()
-    # macOS 上默认路由可能走 VPN 虚拟网卡，UDP connect 会拿到不可达的隧道 IP；
-    # 再从默认物理网卡的地址补一个候选。
     if sys.platform == "darwin":
         try:
             route = subprocess.run(["route", "-n", "get", "default"], capture_output=True, text=True, timeout=3)
@@ -6197,6 +6309,9 @@ def local_lan_ip() -> str:
                 address = result.stdout.strip()
                 if address:
                     candidates.append(address)
+            ifconfig = subprocess.run(["ifconfig"], capture_output=True, text=True, timeout=3)
+            for found in re.findall(r"\binet\s+(\d+\.\d+\.\d+\.\d+)\b", ifconfig.stdout):
+                candidates.append(found)
         except (OSError, subprocess.SubprocessError):
             pass
 
@@ -6207,11 +6322,9 @@ def local_lan_ip() -> str:
             return 99
         if address.is_loopback or address.is_link_local or address.is_unspecified:
             return 99
-        if address in ipaddress.ip_network("198.18.0.0/15"):  # VPN/基准测试虚拟网段
+        if address in ipaddress.ip_network("198.18.0.0/15"):
             return 98
         if not address.is_private:
-            # 企业/校园网常用 11.x、100.64/10 等非 RFC1918 地址；它们仍可能
-            # 是手机能访问的局域网地址，不能直接回退到 127.0.0.1。
             return 10
         octets = [int(part) for part in str(address).split(".")]
         if octets[0] == 192 and octets[1] == 168:
@@ -6222,8 +6335,21 @@ def local_lan_ip() -> str:
             return 2
         return 9
 
-    best = min(candidates, key=rank, default="")
-    return best if best and rank(best) < 99 else "127.0.0.1"
+    unique = []
+    for ip in candidates:
+        if ip not in unique and rank(ip) < 99:
+            unique.append(ip)
+    unique.sort(key=rank)
+    return unique or ["127.0.0.1"]
+
+
+def local_lan_ip() -> str:
+    """探测本机局域网 IP（UDP connect 不会真正发包）。
+
+    优先返回家用/办公网段（192.168 > 10.x > 172.16-31），跳过 VPN 虚拟网段（如 198.18/15）；
+    没有 RFC1918 地址时，接受默认路由所在网卡的非回环地址（如企业网的 11.x）。
+    """
+    return local_lan_ips()[0]
 
 
 def valid_mobile_share(conn: sqlite3.Connection, token: str):
@@ -6421,7 +6547,8 @@ def create_mobile_share(project_id: str):
     )
     conn.commit()
     conn.close()
-    return {"token": token, "path": f"/m/{token}", "expires_at": expires_at, "lan_ip": local_lan_ip()}
+    ips = local_lan_ips()
+    return {"token": token, "path": f"/m/{token}", "expires_at": expires_at, "lan_ip": ips[0], "lan_ips": ips}
 
 
 @app.delete("/api/projects/{project_id}/mobile-share")
@@ -6469,8 +6596,9 @@ def library_share_payload(conn: sqlite3.Connection):
     books = library_books(conn)
     if share is None:
         return {"active": False, "book_count": len(books)}
+    ips = local_lan_ips()
     return {"active": True, "token": share["token"], "path": f"/m/library/{share['token']}",
-            "expires_at": share["expires_at"], "lan_ip": local_lan_ip(), "book_count": len(books)}
+            "expires_at": share["expires_at"], "lan_ip": ips[0], "lan_ips": ips, "book_count": len(books)}
 
 
 @app.post("/api/mobile-library/share")
@@ -6602,6 +6730,38 @@ def mobile_library_audio_stream(token: str, project_id: str, audio_id: str, down
     return FileResponse(path, media_type="audio/mpeg")
 
 
+@app.get("/m/library/{token}/book/{project_id}/download")
+def mobile_library_book_download(token: str, project_id: str):
+    conn = db()
+    share = valid_library_share(conn, token)
+    if share is None:
+        conn.close()
+        raise HTTPException(404, "书架链接不存在或已失效。")
+    if not any(book["project_id"] == project_id for book in library_books(conn)):
+        conn.close()
+        raise HTTPException(404, "这本书不在书架中或还没有可收听的音频。")
+    try:
+        return _build_project_zip_response(conn, project_id, token)
+    finally:
+        conn.close()
+
+
+@app.post("/m/library/{token}/book/{project_id}/progress")
+def mobile_library_book_progress(token: str, project_id: str, payload: MobileShareProgress):
+    conn = db()
+    share = valid_library_share(conn, token)
+    if share is None:
+        conn.close()
+        raise HTTPException(404, "书架链接不存在或已失效。")
+    if not any(book["project_id"] == project_id for book in library_books(conn)):
+        conn.close()
+        raise HTTPException(404, "这本书不在书架中。")
+    try:
+        return _record_mobile_progress(conn, project_id, payload)
+    finally:
+        conn.close()
+
+
 @app.get("/m/icon-180.png")
 def mobile_app_icon():
     """手机「添加到主屏幕」用的图标；不含敏感信息，无需 token。"""
@@ -6648,24 +6808,16 @@ def mobile_audio_stream(token: str, audio_id: str, download: int = 0):
     return FileResponse(path, media_type="audio/mpeg")
 
 
-@app.get("/m/{token}/download")
-def mobile_download_bundle(token: str):
-    """把整本书打包成 ZIP（逐章 MP3 + 讲稿 TXT），供手机一次性下载离线收听。"""
-    conn = db()
-    share = valid_mobile_share(conn, token)
-    if share is None:
-        conn.close()
-        raise HTTPException(404, "链接不存在或已失效。")
-    book = build_mobile_book(conn, share["project_id"])
-    rows = conn.execute("SELECT id, audio_path FROM audio_outputs WHERE project_id = ? AND status = 'ready'", (share["project_id"],)).fetchall()
-    conn.close()
+def _build_project_zip_response(conn: sqlite3.Connection, project_id: str, token_prefix: str) -> FileResponse:
+    book = build_mobile_book(conn, project_id)
+    rows = conn.execute("SELECT id, audio_path FROM audio_outputs WHERE project_id = ? AND status = 'ready'", (project_id,)).fetchall()
     chapters = book["chapters"] or book["whole_book"]
     if not chapters:
         raise HTTPException(404, "这本书还没有可下载的音频。")
     path_map = {row["id"]: row["audio_path"] for row in rows}
 
     safe_title = re.sub(r"[\\/:*?\"<>|]", "_", book["title"]).strip() or "声息"
-    bundle_path = DATA_DIR / "temp" / f"mobile-bundle-{token[:6]}-{int(time.time())}.zip"
+    bundle_path = DATA_DIR / "temp" / f"mobile-bundle-{token_prefix[:6]}-{int(time.time())}.zip"
     script_lines: list[str] = []
     with zipfile.ZipFile(bundle_path, "w", zipfile.ZIP_STORED) as archive:
         for index, chapter in enumerate(chapters, start=1):
@@ -6685,21 +6837,26 @@ def mobile_download_bundle(token: str):
     )
 
 
-@app.post("/m/{token}/progress")
-def mobile_progress(token: str, payload: MobileShareProgress):
-    """手机端「标记已学」回写，与 Mac 端共用 learning_progress。"""
+@app.get("/m/{token}/download")
+def mobile_download_bundle(token: str):
+    """把整本书打包成 ZIP（逐章 MP3 + 讲稿 TXT），供手机一次性下载离线收听。"""
     conn = db()
     share = valid_mobile_share(conn, token)
     if share is None:
         conn.close()
         raise HTTPException(404, "链接不存在或已失效。")
-    audio = conn.execute("SELECT narrative_content_id FROM audio_outputs WHERE id = ? AND project_id = ?", (payload.audio_id, share["project_id"])).fetchone()
-    if audio is None or not audio["narrative_content_id"]:
+    try:
+        return _build_project_zip_response(conn, share["project_id"], token)
+    finally:
         conn.close()
+
+
+def _record_mobile_progress(conn: sqlite3.Connection, project_id: str, payload: MobileShareProgress) -> dict:
+    audio = conn.execute("SELECT narrative_content_id FROM audio_outputs WHERE id = ? AND project_id = ?", (payload.audio_id, project_id)).fetchone()
+    if audio is None or not audio["narrative_content_id"]:
         raise HTTPException(404, "音频不存在。")
     content = conn.execute("SELECT id, markdown FROM narrative_contents WHERE id = ?", (audio["narrative_content_id"],)).fetchone()
     if content is None:
-        conn.close()
         raise HTTPException(404, "讲稿不存在。")
     # 音频标题里的章节名反查 section id；整篇音频无对应章节，忽略。
     audio_title = conn.execute("SELECT title FROM audio_outputs WHERE id = ?", (payload.audio_id,)).fetchone()["title"]
@@ -6708,11 +6865,9 @@ def mobile_progress(token: str, payload: MobileShareProgress):
     headings = re.findall(r"^##[ \t]+(.+)$", collapse_duplicate_headings(content["markdown"]), flags=re.MULTILINE)
     section_id = "section-{}".format(headings.index(suffix) + 1) if suffix in headings else ""
     if not section_id:
-        conn.close()
         return {"saved": False, "reason": "整篇音频不支持按章标记"}
     section_ids = reading_section_ids(content["markdown"])
     if section_id not in section_ids:
-        conn.close()
         raise HTTPException(400, "章节信息已过期，请重新打开链接。")
     current = conn.execute("SELECT * FROM learning_progress WHERE content_id = ?", (content["id"],)).fetchone()
     completed = [s for s in parse_json(current["completed_section_ids_json"], []) if s in section_ids] if current else []
@@ -6728,8 +6883,21 @@ def mobile_progress(token: str, payload: MobileShareProgress):
         (content["id"], section_id, json.dumps(completed, ensure_ascii=False), timestamp),
     )
     conn.commit()
-    conn.close()
     return {"saved": True, "content_id": content["id"], "section_id": section_id, "completed": completed}
+
+
+@app.post("/m/{token}/progress")
+def mobile_progress(token: str, payload: MobileShareProgress):
+    """手机端「标记已学」回写，与 Mac 端共用 learning_progress。"""
+    conn = db()
+    share = valid_mobile_share(conn, token)
+    if share is None:
+        conn.close()
+        raise HTTPException(404, "链接不存在或已失效。")
+    try:
+        return _record_mobile_progress(conn, share["project_id"], payload)
+    finally:
+        conn.close()
 
 
 chatgpt_mcp = create_lawflow_mcp(sys.modules[__name__])

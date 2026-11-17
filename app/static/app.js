@@ -1,4 +1,4 @@
-const appState = { projects: [], selectedProjectId: null, selectedProject: null, selectedDocument: null, activeTab: 'materials', activePlan: null, editingContentId: null, collectionFilter: '', seriesFilter: '', shelfQuery: '', shelfSort: 'updated', notifications: [], factChecks: {} };
+const appState = { projects: [], selectedProjectId: null, selectedProject: null, selectedDocument: null, activeTab: 'materials', activePlan: null, editingContentId: null, collectionFilter: '', seriesFilter: '', shelfQuery: '', shelfSort: 'updated', shelfView: localStorage.getItem('shengxi-shelf-view') || 'grid', batchMode: false, batchSelectedIds: new Set(), notifications: [], factChecks: {} };
 let quickLinkPreview = null;
 const SCENARIOS = {
   daily_brief: { name: '晨间 / 晚间速听', description: '单篇资讯或收藏文章的短时精炼收听', transform: 'condense', verification: 'source_only', duration: 5, audio: true, audience: '个人学习', narrativeLabel: '速听讲稿' },
@@ -70,6 +70,7 @@ function readableError(error) {
 
 function escapeHtml(value = '') { return String(value).replace(/[&<>'"]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[char]); }
 function formatDate(value) { try { return value ? new Intl.DateTimeFormat('zh-CN', { month: 'short', day: 'numeric' }).format(new Date(value)) : ''; } catch (_) { return value || ''; } }
+function formatDateTime(value) { try { return value ? new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(value)) : ''; } catch (_) { return value || ''; } }
 function statusText(status) { return ({ draft: '草稿', pending_review: '待律师审核', confirmed: '已确认', needs_revision: '待修改', discarded: '已废弃', open: '待处理', in_progress: '处理中', done: '已完成', dismissed: '已关闭' })[status] || status; }
 function showMessage(message, error = false) { const box = $('#workspace-message'); box.textContent = message; box.className = error ? 'message error' : 'message'; box.classList.remove('hidden'); if (showMessage._timer) clearTimeout(showMessage._timer); // 错误停留 12 秒：合成失败这类关键提示不能一闪而过，看起来像按钮没反应
   showMessage._timer = setTimeout(() => box.classList.add('hidden'), error ? 12000 : 4800); if (error) console.error('[声息]', message); }
@@ -172,6 +173,43 @@ document.addEventListener('input', event => {
 });
 
 async function loadProjects() { appState.projects = await request('/api/projects'); renderProjectList(); }
+async function loadSeriesOverview() {
+  const box = $('#series-overview');
+  if (!box) return;
+  try {
+    const items = await request('/api/series');
+    appState.seriesStats = items || [];
+    renderSeriesOverview();
+  } catch (_) {
+    appState.seriesStats = [];
+    box.innerHTML = '';
+  }
+}
+function renderSeriesOverview() {
+  const box = $('#series-overview');
+  if (!box) return;
+  const items = appState.seriesStats || [];
+  if (!items.length || !document.body.classList.contains('in-shelf') || document.body.classList.contains('in-project')) {
+    box.innerHTML = '';
+    return;
+  }
+  box.innerHTML = '<section class="series-shelf-bar"><div class="series-shelf-head"><span class="eyebrow">系列合集</span>'
+    + (appState.seriesFilter ? '<button type="button" class="button button-quiet button-small" id="clear-series-bar">显示全部项目</button>' : '')
+    + '</div><div class="series-shelf-chips">'
+    + items.map(item => {
+      const active = appState.seriesFilter === item.name;
+      const dur = item.total_seconds ? ' · ' + formatListenLength(item.total_seconds) : '';
+      const prog = item.total ? ' · 已学 ' + item.done + '/' + item.total + ' 节' : '';
+      return '<button type="button" class="series-shelf-card' + (active ? ' active' : '') + '" data-series-bar="' + escapeHtml(item.name) + '">'
+        + '<b>📚 ' + escapeHtml(item.name) + '</b><small>' + item.count + ' 期' + dur + prog + '</small></button>';
+    }).join('') + '</div></section>';
+  $('#clear-series-bar', box)?.addEventListener('click', () => { appState.seriesFilter = ''; renderProjectList(); });
+  $$('[data-series-bar]', box).forEach(btn => btn.addEventListener('click', () => {
+    const name = btn.dataset.seriesBar;
+    appState.seriesFilter = appState.seriesFilter === name ? '' : name;
+    renderProjectList();
+  }));
+}
 async function loadDailyBriefSubscriptions() {
   const list = $('#daily-brief-list');
   if (!list) return;
@@ -271,7 +309,12 @@ function renderProjectList() {
   const list = $('#project-list');
   if (!document.body.classList.contains('in-shelf')) return;
   document.body.classList.toggle('empty-shelf', appState.projects.length === 0);
+  list.classList.toggle('list-view', appState.shelfView === 'list');
+  list.classList.toggle('batch-mode', !!appState.batchMode);
+  $$('[data-shelf-view]').forEach(btn => btn.classList.toggle('active', btn.dataset.shelfView === appState.shelfView));
   renderCollectionBar();
+  renderSeriesOverview();
+  syncBatchBarUi();
   if (!appState.projects.length) {
     list.innerHTML = '<section class="empty-state onboarding start-page"><div class="start-hero"><h3>从一篇文字，到一段路上的声音。</h3><p>上方可预览公众号文章，也可以上传文件。核对原文后，选择直接朗读或整理成速听。</p></div><div class="start-body"><label class="upload-zone paper-drop start-drop" id="shelf-drop"><input type="file" id="shelf-upload" accept=".docx,.txt,.md,.pdf" /><div class="paper-drop-inner"><b>放下一篇你想带走的文字</b><span>DOCX · PDF · TXT · Markdown</span><small>点选文件，或直接拖进来</small></div></label><ol class="start-timeline"><li><i>01</i><div><b>导入</b><span>先检查文章是否读取完整</span></div></li><li><i>02</i><div><b>选择</b><span>原文朗读或整理成速听</span></div></li><li><i>03</i><div><b>收听</b><span>试听并保存音频</span></div></li></ol></div></section>';
     bindStartPage();
@@ -320,15 +363,48 @@ function renderProjectList() {
     });
     return;
   }
-  list.innerHTML = renderContinueHero() + visible.map(project => { const scenario = SCENARIOS[project.scenario] || SCENARIOS.topic_learning; const progress = project.learning_progress || { done: 0, total: 0 }; const percent = progress.total ? Math.round(progress.done / progress.total * 100) : 0; const progressHtml = progress.total ? '<div class="card-progress"><div class="card-progress-bar"><i style="width:' + percent + '%"></i></div><span>已学 ' + progress.done + ' / ' + progress.total + ' 节</span></div>' : ''; const tag = (project.collection || '').trim(); const tagBtn = '<button type="button" class="card-tag-btn' + (tag ? '' : ' untagged') + '" data-tag-project="' + project.id + '">' + (tag ? escapeHtml(tag) : '＋ 收藏夹') + '</button>'; const series = (project.series || '').trim(); const seriesBtn = series ? '<button type="button" class="card-series-btn' + (appState.seriesFilter === series ? ' active' : '') + '" data-series-filter="' + escapeHtml(series) + '" title="筛选这个系列">📚 ' + escapeHtml(series) + '</button>' : ''; const status = projectCardStatus(project, progress); const direct = !!project.production_stage?.has_direct_audio_script; const durationMeta = projectDurationMeta(project, direct); return '<div class="project-card" role="button" tabindex="0" data-project-id="' + project.id + '"><div class="card-cover"><img src="' + coverForProject(project.id) + '" alt="" loading="lazy" />' + status + '</div><div class="project-card-top"><span class="tag">' + escapeHtml(direct ? '原文朗读' : scenario.name) + '</span><small>' + formatDate(project.updated_at) + '</small><button type="button" class="card-rename-btn" data-rename-project="' + project.id + '" title="重命名项目" aria-label="重命名项目">✎</button></div><h3>' + escapeHtml(project.name) + '</h3><p>' + escapeHtml(direct ? '保留文章内容，直接生成音频' : project.description || project.client_name || scenario.name) + '</p>' + progressHtml + '<div class="meta">' + seriesBtn + tagBtn + '<span>' + project.document_count + ' 份素材</span><span>' + (project.verification_mode === 'source_only' ? '仅依据原文' : project.task_count + ' 项核验') + '</span>' + (durationMeta ? '<span>' + escapeHtml(durationMeta) + '</span>' : '') + '</div></div>'; }).join('');
+  appState.visibleProjectIds = visible.map(item => item.id);
+  list.innerHTML = renderContinueHero() + visible.map(project => {
+    const scenario = SCENARIOS[project.scenario] || SCENARIOS.topic_learning;
+    const progress = project.learning_progress || { done: 0, total: 0 };
+    const percent = progress.total ? Math.round(progress.done / progress.total * 100) : 0;
+    const progressHtml = progress.total ? '<div class="card-progress"><div class="card-progress-bar"><i style="width:' + percent + '%"></i></div><span>已学 ' + progress.done + ' / ' + progress.total + ' 节</span></div>' : '';
+    const tag = (project.collection || '').trim();
+    const tagBtn = '<button type="button" class="card-tag-btn' + (tag ? '' : ' untagged') + '" data-tag-project="' + project.id + '">' + (tag ? escapeHtml(tag) : '＋ 收藏夹') + '</button>';
+    const series = (project.series || '').trim();
+    const seriesBtn = series ? '<button type="button" class="card-series-btn' + (appState.seriesFilter === series ? ' active' : '') + '" data-series-filter="' + escapeHtml(series) + '" title="筛选这个系列">📚 ' + escapeHtml(series) + '</button>' : '';
+    const status = projectCardStatus(project, progress);
+    const direct = !!project.production_stage?.has_direct_audio_script;
+    const durationMeta = projectDurationMeta(project, direct);
+    const checked = appState.batchSelectedIds?.has(project.id);
+    const batchCheck = appState.batchMode ? '<label class="card-batch-check"><input type="checkbox" data-batch-check="' + project.id + '"' + (checked ? ' checked' : '') + ' aria-label="选择 ' + escapeHtml(project.name) + '"/></label>' : '';
+    return '<div class="project-card' + (checked ? ' batch-selected' : '') + '" role="button" tabindex="0" data-project-id="' + project.id + '">' + batchCheck + '<div class="card-cover"><img src="' + coverForProject(project.id) + '" alt="" loading="lazy" />' + status + '</div><div class="project-card-body"><div class="project-card-top"><span class="tag">' + escapeHtml(direct ? '原文朗读' : scenario.name) + '</span><small>' + formatDate(project.updated_at) + '</small><button type="button" class="card-rename-btn" data-rename-project="' + project.id + '" title="重命名项目" aria-label="重命名项目">✎</button></div><h3>' + escapeHtml(project.name) + '</h3><p>' + escapeHtml(direct ? '保留文章内容，直接生成音频' : project.description || project.client_name || scenario.name) + '</p>' + progressHtml + '<div class="meta">' + seriesBtn + tagBtn + '<span>' + project.document_count + ' 份素材</span><span>' + (project.verification_mode === 'source_only' ? '仅依据原文' : project.task_count + ' 项核验') + '</span>' + (durationMeta ? '<span>' + escapeHtml(durationMeta) + '</span>' : '') + '</div></div></div>';
+  }).join('');
   $$('[data-continue-open]', list).forEach(button => button.addEventListener('click', event => { event.stopPropagation(); openProjectTab(button.dataset.continueOpen, 'audio'); }));
   $$('[data-continue-start]', list).forEach(button => button.addEventListener('click', () => {
     const input = $('#quick-link-input');
     input?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     input?.focus({ preventScroll: true });
   }));
+  $$('[data-batch-check]', list).forEach(input => input.addEventListener('click', event => {
+    event.stopPropagation();
+    const pid = input.dataset.batchCheck;
+    if (input.checked) appState.batchSelectedIds.add(pid);
+    else appState.batchSelectedIds.delete(pid);
+    input.closest('.project-card')?.classList.toggle('batch-selected', input.checked);
+    syncBatchBarUi();
+  }));
   $$('.project-card', list).forEach(card => {
-    card.addEventListener('click', () => openProject(card.dataset.projectId));
+    card.addEventListener('click', () => {
+      if (appState.batchMode) {
+        const pid = card.dataset.projectId;
+        if (appState.batchSelectedIds.has(pid)) appState.batchSelectedIds.delete(pid);
+        else appState.batchSelectedIds.add(pid);
+        renderProjectList();
+        return;
+      }
+      openProject(card.dataset.projectId);
+    });
     card.addEventListener('keydown', event => {
       if (event.target !== card) return;
       if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openProject(card.dataset.projectId); }
@@ -398,6 +474,7 @@ async function checkModelConfigured() {
   if ($('#model-banner')) return;
   const banner = document.createElement('div');
   banner.id = 'model-banner';
+  banner.className = 'model-banner';
   banner.innerHTML = '<span>使用 AI 整理讲稿前，请先在设置中连接文本模型；原文朗读可以使用本机语音。</span>'
     + '<button type="button" class="button button-primary button-small" id="model-banner-open">打开设置</button>'
     + '<button type="button" class="icon-button" id="model-banner-close" aria-label="关闭">×</button>';
@@ -556,9 +633,12 @@ async function openProject(projectId) {
     appState.activePlan = appState.selectedProject.plans[0] || null;
     appState.activeTab = defaultTabForProject(appState.selectedProject);
     appState.openAudioScript = null;
+    appState.selectedContentId = null;
     $('#project-detail').classList.remove('hidden');
     document.body.classList.add('in-project', 'in-shelf');
     renderProjectDetail();
+    syncUrlHash();
+    updateGlobalMiniPlayer();
     window.scrollTo({ top: 0, behavior: 'smooth' });
   } catch (error) { showMessage(error.message, true); }
 }
@@ -591,6 +671,8 @@ function closeProject() {
   document.body.classList.remove('in-project');
   document.body.classList.add('in-shelf');
   renderProjectList();
+  syncUrlHash();
+  updateGlobalMiniPlayer();
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
@@ -602,6 +684,8 @@ function showShelf(openDialog = false) {
   $('#project-detail').classList.add('hidden');
   appState.selectedProjectId = null; appState.selectedProject = null; appState.selectedDocument = null;
   renderProjectList();
+  syncUrlHash();
+  updateGlobalMiniPlayer();
   window.scrollTo({ top: 0 });
   if (openDialog) $('#project-dialog')?.showModal();
 }
@@ -611,9 +695,61 @@ function goHome() {
   clearProjectDrafts();
   document.body.classList.remove('in-shelf', 'in-project');
   $('#project-detail').classList.add('hidden');
+  appState.selectedProjectId = null; appState.selectedProject = null;
+  syncUrlHash('#/home');
+  updateGlobalMiniPlayer();
   window.scrollTo({ top: 0 });
   // 回主页时刷新试听区，让刚生成的音频不必重启就能出现
   appState.projects?.length && initListenSection();
+}
+
+let suppressHashRoute = false;
+function syncUrlHash(explicitHash = '') {
+  if (window.location.protocol === 'file:') return;
+  let target = explicitHash;
+  if (!target) {
+    if (document.body.classList.contains('in-project') && appState.selectedProjectId) {
+      target = '#/project/' + encodeURIComponent(appState.selectedProjectId) + '/' + encodeURIComponent(appState.activeTab || 'audio');
+    } else if (document.body.classList.contains('in-shelf')) {
+      target = '#/shelf';
+    } else {
+      target = '#/home';
+    }
+  }
+  if (window.location.hash === target) return;
+  suppressHashRoute = true;
+  try { history.replaceState(null, '', target); } catch (_) { window.location.hash = target; }
+  setTimeout(() => { suppressHashRoute = false; }, 0);
+}
+
+async function applyRouteFromHash() {
+  if (suppressHashRoute) return;
+  const raw = window.location.hash || '';
+  const parts = raw.replace(/^#\/?/, '').split('/').filter(Boolean).map(decodeURIComponent);
+  if (parts[0] === 'project' && parts[1]) {
+    const pid = parts[1];
+    const tab = parts[2] || '';
+    if (appState.selectedProjectId !== pid) {
+      await openProject(pid);
+    }
+    if (tab && appState.selectedProject && appState.activeTab !== tab) {
+      appState.activeTab = tab;
+      renderProjectDetail();
+    }
+    return;
+  }
+  if (parts[0] === 'shelf') {
+    showShelf();
+    return;
+  }
+  if (parts[0] === 'home' || raw === '#top') {
+    goHome();
+    return;
+  }
+  // 初次无 hash 进入：若书架已有项目，直接进入书架工作台，省去每次穿过宣传页
+  if ((appState.projects || []).length > 0) {
+    showShelf();
+  }
 }
 
 function projectStepState(data) {
@@ -693,14 +829,16 @@ function renderProjectDetail() {
     preferenceBits.push('时长不设上限');
   }
   const preferenceText = preferenceBits.map(text => '<span>' + escapeHtml(text) + '</span>').join('');
-  detail.innerHTML = '<div class="detail-top"><div class="detail-header"><div><p class="eyebrow">' + escapeHtml(directListening ? '原文朗读' : scenario.name) + '</p><h2>' + escapeHtml(data.project.name) + '</h2><p>' + escapeHtml(directListening ? '保留文章内容，直接生成并收听音频。' : data.project.client_name || data.project.description || scenario.description) + '</p><div class="task-preferences"><button type="button" class="tag-edit-btn" id="edit-collection" title="归类到某个收藏夹">🏷 ' + ((data.project.collection || '').trim() ? escapeHtml(data.project.collection.trim()) : '收藏夹未设置 · 点击归类') + '</button><button type="button" class="tag-edit-btn" id="edit-series" title="归入某个系列">📚 ' + ((data.project.series || '').trim() ? escapeHtml(data.project.series.trim()) : '系列未设置 · 点击归类') + '</button>' + preferenceText + '</div></div><div class="detail-actions">' + '<button class="button button-outline button-small" id="back-to-projects">← 全部项目</button><button class="button button-outline button-small" id="export-project">导出到本机…</button><details class="more-menu"><summary class="button button-outline button-small">更多</summary><div class="more-menu-list"><button class="button button-quiet button-small" id="edit-collection-menu">归类到收藏夹</button><button class="button button-quiet button-small" id="edit-series-menu">归类到系列</button><button class="button button-quiet button-small" id="rename-project">重命名项目</button><button class="button button-quiet button-small" id="reload-project">重新载入项目</button><button class="button button-danger button-small" id="delete-project">删除项目</button></div></details></div></div>' + '<div class="tabbar">' + tabHtml + '</div></div>' + renderWorkflowHint(data, state) + '<div id="detail-panel" class="detail-panel"></div>';
+  const mobileShareBtn = state.hasAudio ? '<button class="button button-primary button-small" id="open-mobile-pass">📱 带到手机听</button>' : '';
+  detail.innerHTML = '<div class="detail-top"><div class="detail-header"><div><p class="eyebrow">' + escapeHtml(directListening ? '原文朗读' : scenario.name) + '</p><h2>' + escapeHtml(data.project.name) + '</h2><p>' + escapeHtml(directListening ? '保留文章内容，直接生成并收听音频。' : data.project.client_name || data.project.description || scenario.description) + '</p><div class="task-preferences"><button type="button" class="tag-edit-btn" id="edit-collection" title="归类到某个收藏夹">🏷 ' + ((data.project.collection || '').trim() ? escapeHtml(data.project.collection.trim()) : '收藏夹未设置 · 点击归类') + '</button><button type="button" class="tag-edit-btn" id="edit-series" title="归入某个系列">📚 ' + ((data.project.series || '').trim() ? escapeHtml(data.project.series.trim()) : '系列未设置 · 点击归类') + '</button>' + preferenceText + '</div></div><div class="detail-actions">' + '<button class="button button-outline button-small" id="back-to-projects">← 全部项目</button>' + mobileShareBtn + '<button class="button button-outline button-small" id="export-project">导出到本机…</button><details class="more-menu"><summary class="button button-outline button-small">更多</summary><div class="more-menu-list"><button class="button button-quiet button-small" id="edit-collection-menu">归类到收藏夹</button><button class="button button-quiet button-small" id="edit-series-menu">归类到系列</button><button class="button button-quiet button-small" id="rename-project">重命名项目</button><button class="button button-quiet button-small" id="reload-project">重新载入项目</button><button class="button button-danger button-small" id="delete-project">删除项目</button></div></details></div></div>' + '<div class="tabbar">' + tabHtml + '</div></div>' + renderWorkflowHint(data, state) + '<div id="detail-panel" class="detail-panel"></div>';
   $('#edit-collection')?.addEventListener('click', () => openCollectionDialog(data.project.id));
   $('#edit-collection-menu')?.addEventListener('click', () => openCollectionDialog(data.project.id));
   $('#edit-series')?.addEventListener('click', () => openSeriesDialog(data.project.id));
   $('#edit-series-menu')?.addEventListener('click', () => openSeriesDialog(data.project.id));
   $('#rename-project')?.addEventListener('click', () => openRenameDialog(data.project.id));
-  $$('.tabbar button', detail).forEach(button => button.addEventListener('click', () => { appState.activeTab = button.dataset.tab; renderProjectDetail(); }));
-  $$('[data-workflow-next]', detail).forEach(button => button.addEventListener('click', () => { appState.activeTab = button.dataset.workflowNext; renderProjectDetail(); $('#detail-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }));
+  $('#open-mobile-pass')?.addEventListener('click', () => openMobilePassModal());
+  $$('.tabbar button', detail).forEach(button => button.addEventListener('click', () => { appState.activeTab = button.dataset.tab; syncUrlHash(); renderProjectDetail(); updateGlobalMiniPlayer(); }));
+  $$('[data-workflow-next]', detail).forEach(button => button.addEventListener('click', () => { appState.activeTab = button.dataset.workflowNext; syncUrlHash(); renderProjectDetail(); updateGlobalMiniPlayer(); $('#detail-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }));
   $('#reload-project').addEventListener('click', () => openProject(data.project.id)); $('#back-to-projects').addEventListener('click', closeProject); $('#export-project').addEventListener('click', exportProject); $('#delete-project').addEventListener('click', deleteProject); renderActivePanel();
 }
 let collectionDialogProjectId = null;
@@ -772,13 +910,94 @@ function bindShelfControls() {
     sort.value = appState.shelfSort;
     sort.addEventListener('change', () => { appState.shelfSort = sort.value; renderProjectList(); });
   }
+  $$('[data-shelf-view]').forEach(btn => btn.addEventListener('click', () => {
+    appState.shelfView = btn.dataset.shelfView || 'grid';
+    try { localStorage.setItem('shengxi-shelf-view', appState.shelfView); } catch (_) {}
+    renderProjectList();
+  }));
+  $('#shelf-batch-toggle')?.addEventListener('click', () => {
+    appState.batchMode = !appState.batchMode;
+    if (!appState.batchMode) appState.batchSelectedIds.clear();
+    renderProjectList();
+  });
+  $('#shelf-select-all')?.addEventListener('click', () => {
+    (appState.visibleProjectIds || []).forEach(id => appState.batchSelectedIds.add(id));
+    renderProjectList();
+  });
+  $('#shelf-select-none')?.addEventListener('click', () => {
+    appState.batchSelectedIds.clear();
+    renderProjectList();
+  });
+  $('#shelf-batch-collection')?.addEventListener('click', async () => {
+    const ids = [...(appState.batchSelectedIds || [])];
+    if (!ids.length) return;
+    const name = window.prompt('将选中的 ' + ids.length + ' 个项目归入哪个收藏夹？（留空移出收藏夹）', '');
+    if (name === null) return;
+    const val = name.trim();
+    for (const id of ids) {
+      await request('/api/projects/' + id + '/collection', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ collection: val }) });
+    }
+    appState.batchSelectedIds.clear();
+    appState.batchMode = false;
+    await loadProjects();
+    showMessage(val ? '已将 ' + ids.length + ' 个项目归入收藏夹「' + val + '」。' : '已移出收藏夹。');
+  });
+  $('#shelf-batch-series')?.addEventListener('click', async () => {
+    const ids = [...(appState.batchSelectedIds || [])];
+    if (!ids.length) return;
+    const name = window.prompt('将选中的 ' + ids.length + ' 个项目归入哪个系列？（留空移出系列）', '');
+    if (name === null) return;
+    const val = name.trim();
+    for (const id of ids) {
+      await request('/api/projects/' + id + '/series', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ series: val }) });
+    }
+    appState.batchSelectedIds.clear();
+    appState.batchMode = false;
+    await Promise.all([loadProjects(), loadSeriesOverview()]);
+    showMessage(val ? '已将 ' + ids.length + ' 个项目归入系列「' + val + '」。' : '已移出系列。');
+  });
+  $('#shelf-batch-delete')?.addEventListener('click', async () => {
+    const ids = [...(appState.batchSelectedIds || [])];
+    if (!ids.length) return;
+    if (!window.confirm('确定删除选中的 ' + ids.length + ' 个项目吗？项目内的素材、讲稿与音频将一并删除，此操作不可撤销。')) return;
+    const btn = $('#shelf-batch-delete');
+    try {
+      setBusy(btn, true, '删除中…');
+      for (const id of ids) {
+        await request('/api/projects/' + id, { method: 'DELETE' });
+      }
+      appState.batchSelectedIds.clear();
+      appState.batchMode = false;
+      await Promise.all([loadProjects(), loadSeriesOverview()]);
+      showMessage('已删除 ' + ids.length + ' 个项目。');
+    } catch (error) { showMessage(error.message, true); } finally { if (btn?.isConnected) setBusy(btn, false); }
+  });
   $('#rename-form')?.addEventListener('submit', submitRename);
+}
+
+function syncBatchBarUi() {
+  const bar = $('#shelf-batch-bar');
+  const toggle = $('#shelf-batch-toggle');
+  if (toggle) {
+    toggle.textContent = appState.batchMode ? '退出批量' : '批量管理';
+    toggle.classList.toggle('active', !!appState.batchMode);
+  }
+  if (!bar) return;
+  const visible = !!appState.batchMode && document.body.classList.contains('in-shelf') && !document.body.classList.contains('in-project');
+  bar.classList.toggle('hidden', !visible);
+  const count = appState.batchSelectedIds?.size || 0;
+  const countEl = $('#shelf-batch-count');
+  if (countEl) countEl.textContent = '已选 ' + count + ' 项';
+  ['#shelf-batch-collection', '#shelf-batch-series', '#shelf-batch-delete'].forEach(sel => {
+    const el = $(sel);
+    if (el) el.disabled = count === 0;
+  });
 }
 
 let seriesDialogProjectId = null;
 
 function openSeriesDialog(projectId) {
-  const project = appState.projects.find(item => item.id === projectId);
+  const project = appState.projects.find(item => item.id === projectId) || (appState.selectedProject?.project?.id === projectId ? appState.selectedProject.project : null);
   if (!project) return;
   seriesDialogProjectId = projectId;
   const current = (project.series || '').trim();
@@ -814,7 +1033,7 @@ async function saveProjectSeries(projectId, value) {
     const updated = await request('/api/projects/' + projectId + '/series', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ series: value }) });
     $('#series-dialog').close();
     if (appState.selectedProject?.project?.id === projectId) appState.selectedProject.project = updated;
-    await loadProjects();
+    await Promise.all([loadProjects(), loadSeriesOverview()]);
     if (appState.selectedProject?.project?.id === projectId) renderProjectDetail();
     showMessage(value ? '已归入系列「' + value + '」。' : '已从系列移出。');
   } catch (error) { showMessage(error.message, true); }
@@ -1497,15 +1716,21 @@ function renderNarrativeOutputPanel() {
 
   const learningStats = (() => { let total = 0, done = 0; contents.forEach(content => { const reading = readingSections(content.markdown || ''); total += reading.length; const completed = new Set((content.reading_progress || {}).completed_section_ids || []); reading.forEach(section => { if (completed.has(section.id)) done += 1; }); }); return { total, done }; })();
   const learningSummary = learningStats.total ? '<p class="form-note">碎片学习进度：已学 ' + learningStats.done + ' / ' + learningStats.total + ' 节' + (learningStats.done < learningStats.total ? '，从上次停下的地方继续即可。' : '，全部完成。') + '</p>' : '';
+  const activeContent = selectPrimaryNarrativeContent(contents);
+  const historyBar = renderVersionSwitcherBar(contents, activeContent);
 
-  panel.innerHTML = (contents.some(content => content.outline_id === confirmedOutline.id) ? '' : '<section class="panel-card"><h3>' + (contents.length ? '按新大纲生成新版本' : '生成' + scenario.narrativeLabel) + '</h3><p>大纲已确认。生成后可逐章查看正文与音频、提出修改意见。' + (contents.length ? '已有讲稿会保留，可对照新版本。' : '') + '</p><p class="form-note" id="generation-status">点击下方按钮开始逐节写作；写作过程中这里会显示当前进度。</p><div class="plan-actions"><button class="button button-primary" data-generate-from-outline="' + confirmedOutline.id + '">逐节生成' + escapeHtml(scenario.narrativeLabel) + '</button></div></section>') +
-    '<section class="panel-card"><div class="narrative-content-list">' + (contents.length ? renderNarrativeContentCard(contents[0]) + contents.slice(1).map(content => '<details class="previous-content"><summary>较早版本：' + escapeHtml(content.title) + ' · ' + formatDate(content.created_at) + '</summary>' + renderNarrativeContentCard(content) + '</details>').join('') : '<p class="form-note">尚未生成讲稿。</p>') + '</div></section>' +
+  const hasOutlineContent = contents.some(content => content.outline_id === confirmedOutline.id);
+  const isPreviewDraftOnly = hasOutlineContent && contents.some(content => content.outline_id === confirmedOutline.id && String(content.review_note || '').includes('第 1 章试听'));
+  panel.innerHTML = (hasOutlineContent && !isPreviewDraftOnly ? '' : '<section class="panel-card"><h3>' + (isPreviewDraftOnly ? '第 1 章试听已就绪 · 继续生成剩余章节' : contents.length ? '按新大纲生成新版本' : '生成' + scenario.narrativeLabel) + '</h3><p>' + (isPreviewDraftOnly ? '你已生成第 1 章试听草稿。如果风格合意，点击下方按钮即可直接从第 2 章续写全篇，第 1 章不会重复生成。' : '大纲已确认。可以先花 20 秒生成第 1 章试听验证风格，也可以直接逐节生成全篇。') + '</p><p class="form-note" id="generation-status">点击下方按钮开始写作；写作过程中这里会显示当前进度。</p><div class="plan-actions">' + (!isPreviewDraftOnly && (confirmedOutline.outline?.sections || []).length > 1 ? '<button class="button button-outline" data-preview-first-outline="' + confirmedOutline.id + '">⚡ 先生成第 1 章试听</button>' : '') + '<button class="button button-primary" data-generate-from-outline="' + confirmedOutline.id + '">' + (isPreviewDraftOnly ? '继续生成剩余章节' : '逐节生成' + escapeHtml(scenario.narrativeLabel)) + '</button></div></section>') +
+    '<section class="panel-card">' + historyBar + '<div class="narrative-content-list">' + (activeContent ? renderNarrativeContentCard(activeContent) : '<p class="form-note">尚未生成讲稿。</p>') + '</div></section>' +
     '<details class="panel-card optional-path"><summary>也可以交给外部 AI 助手写稿，再粘贴回本地审阅</summary><div class="optional-path-body"><p>无需配置模型密钥。声息只复制当前材料块与写作要求；你在任意 AI 助手（如 ChatGPT、千问）生成 Markdown 后，粘贴回本地即可。</p><div class="handoff-actions"><button class="button button-outline" id="copy-chatgpt-prompt">复制给 AI 助手</button><button class="button button-primary" id="open-chatgpt-import">粘贴 AI 成稿</button></div></div></details>';
 
   $('[data-generate-from-outline]')?.addEventListener('click', event => generateNarrative(confirmedOutline.id, event.currentTarget));
+  $('[data-preview-first-outline]')?.addEventListener('click', event => previewFirstNarrativeSection(confirmedOutline.id, event.currentTarget));
   $('#copy-chatgpt-prompt').addEventListener('click', copyChatGPTPrompt);
   $('#open-chatgpt-import').addEventListener('click', openChatGPTImport);
   bindNarrativeContentEvents();
+  bindVersionSwitcherEvents(panel);
 }
 
 function selectedNarrativeSourceIds(documentId) {
@@ -1654,7 +1879,7 @@ function renderNarrativeOutline(record) {
   const isConfirmed = record.status === 'confirmed';
   const statusBadge = isConfirmed ? '<span class="tag confirmed">● 大纲已确认</span>' : '<span class="tag">待确认大纲</span>';
   const actionButtons = isConfirmed ?
-    '<button class="button button-outline button-small" id="reedit-narrative-outline">重新调整大纲</button><button class="button button-primary button-small" data-generate-narrative="' + record.id + '">生成讲稿</button>' :
+    '<button class="button button-outline button-small" id="reedit-narrative-outline">重新调整大纲</button>' + (sections.length > 1 ? '<button class="button button-outline button-small" data-preview-first-outline="' + record.id + '">⚡ 先生成第 1 章试听</button>' : '') + '<button class="button button-primary button-small" data-generate-narrative="' + record.id + '">生成全篇讲稿</button>' :
     '<button class="button button-outline button-small" id="add-narrative-section" ' + (sections.length >= 8 ? 'disabled' : '') + '>新增章节</button><button class="button button-primary button-small" id="confirm-narrative-outline">确认大纲</button>';
   const disabled = isConfirmed ? 'disabled' : '';
   area.innerHTML = '<div class="outline-header"><div><p class="eyebrow">' + (isConfirmed ? '大纲已就绪' : '待确认大纲 · 可调整顺序、内容与补充来源') + '</p><label>标题<input id="outline-title" value="' + escapeHtml(outline.title || record.title) + '" ' + disabled + '/></label><label>开场思路<input id="outline-opening" value="' + escapeHtml(outline.opening_angle || '') + '" ' + disabled + '/></label><label>收束思路<input id="outline-closing" value="' + escapeHtml(outline.closing_angle || '') + '" ' + disabled + '/></label></div>' + statusBadge + '</div><div class="narrative-outline-list">' + sections.map((section, index) => {
@@ -1686,7 +1911,25 @@ function renderNarrativeOutline(record) {
     $('#confirm-narrative-outline')?.addEventListener('click', () => confirmNarrativeOutline(record));
   } else {
     $('#reedit-narrative-outline')?.addEventListener('click', event => copyOutlineForEditing(record, event.currentTarget));
+    $('[data-preview-first-outline]', area)?.addEventListener('click', event => previewFirstNarrativeSection(record.id, event.currentTarget));
     $('[data-generate-narrative]')?.addEventListener('click', event => generateNarrative(record.id, event.currentTarget));
+  }
+}
+
+async function previewFirstNarrativeSection(outlineId, button) {
+  try {
+    setBusy(button, true, '正在写第 1 章试听…');
+    showMessage('正在生成第 1 章试听正文与语音，约需 20 秒…');
+    const res = await request('/api/narrative-outlines/' + outlineId + '/preview-first?synthesize=true', { method: 'POST' });
+    appState.selectedProject = await request('/api/projects/' + appState.selectedProject.project.id);
+    appState.selectedContentId = res.content_id;
+    appState.activeTab = res.audio?.audio_path ? 'audio' : 'narrative';
+    renderProjectDetail();
+    showMessage('第 1 章「' + (res.heading || '') + '」试听已生成！满意后可点「继续生成剩余章节」续写全篇。');
+  } catch (error) {
+    showMessage(error.message, true);
+  } finally {
+    if (button?.isConnected) setBusy(button, false);
   }
 }
 
@@ -1952,10 +2195,11 @@ function renderAudioPanel() {
     return !(content.chapters || []).some(chapter => output.title === content.title + ' · ' + chapter.heading || ((content.chapters.length === 1 || chapter.heading === content.title) && output.title === content.title));
   });
   // 收听页顶部：播客 App 风格的连续收听播放器（封面 / 进度 / 倍速 / 章节列表 / 本章讲稿）
-  const heroContent = contents.find(item => (item.chapters || []).length > 1) || contents[0] || null;
+  const heroContent = selectPrimaryNarrativeContent(contents);
   const hero = heroContent ? renderStudioHero(heroContent) : '';
   const readerContent = heroContent || contents[0];
-  const chapterBooks = readerContent ? '<section class="panel-card"><h3>本章阅读</h3><div id="chapter-reader-slot">' + renderChapterWorkbench(readerContent, { sidebar: false }) + '</div>' + contents.filter(content => content.id !== readerContent.id).map(content => '<details class="previous-content"><summary>较早版本：' + escapeHtml(content.title) + '</summary>' + renderChapterWorkbench(content, { sidebar: false }) + '</details>').join('') + '</section>' : '';
+  const historyBar = renderVersionSwitcherBar(contents, readerContent);
+  const chapterBooks = readerContent ? '<section class="panel-card"><div class="chapter-reader-top"><h3>本章阅读</h3><span class="chapter-reader-tip">点击正文任意句子可直接跳转收听 · 划选文字可针对性修改</span></div>' + historyBar + '<div id="chapter-reader-slot">' + renderChapterWorkbench(readerContent, { sidebar: false, studioControlled: true }) + '</div></section>' : '';
   const directOutputs = outputs.filter(output => !output.narrative_content_id);
   // 顶部已有播客播放器，“章节 · 收听”说明卡不再重复占一屏；首次使用提示并入空态。
   const listeningIntro = contents.length
@@ -1963,10 +2207,14 @@ function renderAudioPanel() {
     : directOutputs.length
       ? '<section class="panel-card audio-intro"><h3>原文朗读</h3><p>' + (directOutputs.some(output => output.audio_available) ? '整篇音频已生成，可直接试听、导出或发送到手机。如需分章收听，可切换到「播客风改写（可选）」。' : '原文朗读不拆分章节；生成整篇音频后即可试听、导出或发送到手机。') + '</p></section>'
       : '';
-  panel.innerHTML = hero + listeningIntro + chapterBooks + (standalone.length ? '<section class="panel-card"><h3>原文朗读与整篇音频</h3><div class="audio-output-list">' + renderAudioGroups(standalone) + '</div></section>' : contents.length ? '' : '<section class="panel-card"><p>' + empty + '</p></section>') + sendMobile + libraryCard + mobileGuide + sourceCard + audiobookCard;
+  const advancedTools = (sendMobile || libraryCard || mobileGuide || sourceCard || audiobookCard)
+    ? '<details class="panel-card audio-toolbox"><summary>更多音频工具：二维码领取、整篇口播脚本与 M4B 有声书导出</summary><div class="audio-toolbox-grid">' + sendMobile + libraryCard + audiobookCard + sourceCard + mobileGuide + '</div></details>'
+    : '';
+  panel.innerHTML = hero + listeningIntro + chapterBooks + (standalone.length ? '<section class="panel-card"><h3>原文朗读与整篇音频</h3><div class="audio-output-list">' + renderAudioGroups(standalone) + '</div></section>' : contents.length ? '' : '<section class="panel-card"><p>' + empty + '</p></section>') + advancedTools;
   // 先绑定初始阅读面；若下方播放器选定章节，syncStudioReader 会替换
   // #chapter-reader-slot 并只对该插槽重新绑定，避免重复监听。
   bindNarrativeContentEvents();
+  bindVersionSwitcherEvents(panel);
   if (heroContent) {
     initStudioPlayer(heroContent);
     const generateAll = $('#studio-generate-all');
@@ -2059,6 +2307,7 @@ function renderAudioGroups(outputs) {
 function stopOtherAudio(exceptPlayer) {
   $$('audio').forEach(player => { if (player !== exceptPlayer) player.pause(); });
   if (listenState.audio && listenState.audio !== exceptPlayer) listenState.audio.pause();
+  if (studioState.audio && studioState.audio !== exceptPlayer) studioState.audio.pause();
   if ('speechSynthesis' in window) window.speechSynthesis.cancel();
 }
 
@@ -2094,7 +2343,86 @@ function renderAudioOutput(output, chapter = null) {
 }
 
 /* 收听页顶部的播客播放器：封面、进度、倍速、章节列表、当前章讲稿同步查看。 */
-let studioState = { tracks: [], index: -1, audio: null, contentId: '', content: null };
+let studioState = { tracks: [], index: -1, audio: null, contentId: '', content: null, projectId: '', projectName: '' };
+
+function contentReadyAudioCount(content) {
+  const outputs = appState.selectedProject?.audio_outputs || [];
+  return outputs.filter(output => output.narrative_content_id === content.id && output.audio_available && output.status !== 'source_changed').length;
+}
+
+function selectPrimaryNarrativeContent(contents) {
+  if (!contents || !contents.length) return null;
+  if (appState.selectedContentId) {
+    const chosen = contents.find(item => item.id === appState.selectedContentId);
+    if (chosen) return chosen;
+  }
+  const confirmedWithAudio = contents.find(item => item.status === 'confirmed' && contentReadyAudioCount(item) > 0);
+  if (confirmedWithAudio) return confirmedWithAudio;
+  const confirmed = contents.find(item => item.status === 'confirmed');
+  if (confirmed) return confirmed;
+  const withAudio = contents.find(item => contentReadyAudioCount(item) > 0);
+  if (withAudio) return withAudio;
+  return contents.find(item => (item.chapters || []).length > 1) || contents[0];
+}
+
+function renderVersionSwitcherBar(contents, activeContent) {
+  if (!contents || contents.length <= 1 || !activeContent) return '';
+  const unconfirmedCount = contents.filter(item => item.status !== 'confirmed').length;
+  const hasConfirmed = contents.some(item => item.status === 'confirmed');
+  const options = contents.map((item, idx) => {
+    const verNum = contents.length - idx;
+    const readyCount = contentReadyAudioCount(item);
+    const audioTag = readyCount ? ' · ' + readyCount + ' 章音频' : '';
+    const timeTag = formatDateTime(item.updated_at || item.created_at);
+    return '<option value="' + escapeHtml(item.id) + '"' + (item.id === activeContent.id ? ' selected' : '') + '>'
+      + 'v' + verNum + ' · ' + statusText(item.status) + audioTag + (timeTag ? '（' + timeTag + '）' : '') + '</option>';
+  }).join('');
+  const newerDraft = contents[0].id !== activeContent.id && contents[0].status !== 'confirmed'
+    ? '<span class="version-draft-hint">另有一份更新的草稿待审阅 <button type="button" class="button button-quiet button-small" data-switch-version="' + escapeHtml(contents[0].id) + '">查看最新草稿</button></span>'
+    : '';
+  const pruneBtn = hasConfirmed && unconfirmedCount > 0
+    ? '<button type="button" class="button button-quiet button-small" data-prune-versions title="删除未确认的历史草稿，只保留已确认正式版">清理 ' + unconfirmedCount + ' 份未确认草稿</button>'
+    : '';
+  const deleteBtn = contents.length > 1 && activeContent.status !== 'confirmed'
+    ? '<button type="button" class="button button-danger button-small" data-delete-version="' + escapeHtml(activeContent.id) + '">删除此草稿</button>'
+    : '';
+  return '<div class="version-switcher-bar"><div class="version-switcher-left"><span class="version-badge">当前展示版本</span><label class="version-select-label"><select data-version-select aria-label="切换讲稿版本">' + options + '</select></label>' + newerDraft + '</div><div class="version-switcher-actions">' + pruneBtn + deleteBtn + '</div></div>';
+}
+
+function bindVersionSwitcherEvents(root = $('#detail-panel')) {
+  $$('[data-version-select]', root).forEach(select => select.addEventListener('change', () => {
+    appState.selectedContentId = select.value;
+    renderProjectDetail();
+  }));
+  $$('[data-switch-version]', root).forEach(btn => btn.addEventListener('click', () => {
+    appState.selectedContentId = btn.dataset.switchVersion;
+    renderProjectDetail();
+  }));
+  $$('[data-prune-versions]', root).forEach(btn => btn.addEventListener('click', async () => {
+    if (!window.confirm('清理未确认的历史草稿？已确认的正式讲稿及其音频会完整保留。')) return;
+    try {
+      setBusy(btn, true, '清理中…');
+      const res = await request('/api/projects/' + appState.selectedProject.project.id + '/narrative-contents/prune', { method: 'POST' });
+      appState.selectedContentId = null;
+      appState.selectedProject = await request('/api/projects/' + appState.selectedProject.project.id);
+      await loadProjects();
+      renderProjectDetail();
+      showMessage('已清理 ' + (res.deleted || 0) + ' 份未确认草稿，当前保留正式版本。');
+    } catch (error) { showMessage(error.message, true); } finally { if (btn.isConnected) setBusy(btn, false); }
+  }));
+  $$('[data-delete-version]', root).forEach(btn => btn.addEventListener('click', async () => {
+    if (!window.confirm('确定删除这份未确认的讲稿草稿吗？')) return;
+    try {
+      setBusy(btn, true, '删除中…');
+      await request('/api/narrative-contents/' + btn.dataset.deleteVersion, { method: 'DELETE' });
+      appState.selectedContentId = null;
+      appState.selectedProject = await request('/api/projects/' + appState.selectedProject.project.id);
+      await loadProjects();
+      renderProjectDetail();
+      showMessage('讲稿草稿已删除。');
+    } catch (error) { showMessage(error.message, true); } finally { if (btn.isConnected) setBusy(btn, false); }
+  }));
+}
 
 function studioTracks(content) {
   return (content.chapters || []).map(chapter => ({ chapter, output: chapterAudio(content, chapter) }));
@@ -2103,6 +2431,8 @@ function studioTracks(content) {
 function syncStudioRateButtons() {
   const rate = getListenRate();
   $$('#studio-rate .listen-rate-btn').forEach(button => button.classList.toggle('active', Number(button.dataset.rate) === rate));
+  const miniRate = $('#mini-player-rate');
+  if (miniRate) miniRate.textContent = rate + '×';
 }
 
 function syncStudioReader(track) {
@@ -2111,7 +2441,7 @@ function syncStudioReader(track) {
   if (!content || !track || !slot) return;
   appState.chapterFocus ||= {};
   appState.chapterFocus[content.id] = track.chapter.id;
-  slot.innerHTML = renderChapterWorkbench(content, { sidebar: false });
+  slot.innerHTML = renderChapterWorkbench(content, { sidebar: false, studioControlled: true });
   bindNarrativeContentEvents(slot);
 }
 
@@ -2124,27 +2454,52 @@ function selectStudioTrack(index) {
   const total = $('#studio-total');
   if (total) total.textContent = formatListenTime(track.output?.duration_seconds || 0);
   const current = $('#studio-current');
-  if (current) current.textContent = '0:00';
+  const isSamePlaying = studioState.audio && track.output && studioState.audio.dataset?.outputId === track.output.id;
+  if (current) current.textContent = isSamePlaying ? formatListenTime(studioState.audio.currentTime || 0) : '0:00';
   const bar = $('#studio-bar');
-  if (bar) bar.style.width = '0%';
+  if (bar) bar.style.width = (isSamePlaying && studioState.audio.duration ? (studioState.audio.currentTime / studioState.audio.duration * 100) : 0) + '%';
   localStorage.setItem('shengxi-studio-last:' + studioState.contentId, track.chapter.heading);
   $$('#studio-chapters .listen-chapter').forEach((button, i) => button.classList.toggle('active', i === index));
   renderStudioScript();
   syncStudioReader(track);
+  updateGlobalMiniPlayer();
 }
 
 function studioAudio() {
   if (!studioState.audio) {
     const audio = new Audio();
-    audio.addEventListener('loadedmetadata', () => { const el = $('#studio-total'); if (el) el.textContent = formatListenTime(audio.duration); });
+    audio.addEventListener('loadedmetadata', () => {
+      const el = $('#studio-total');
+      if (el) el.textContent = formatListenTime(audio.duration);
+      if (studioState.pendingRatio != null && isFinite(audio.duration) && audio.duration > 0) {
+        audio.currentTime = Math.min(audio.duration - 0.2, Math.max(0, studioState.pendingRatio * audio.duration));
+        studioState.pendingRatio = null;
+      }
+      updateGlobalMiniPlayer();
+    });
     audio.addEventListener('timeupdate', () => {
       const bar = $('#studio-bar'), current = $('#studio-current');
-      if (bar) bar.style.width = (audio.duration ? audio.currentTime / audio.duration * 100 : 0) + '%';
+      const ratio = audio.duration ? audio.currentTime / audio.duration : 0;
+      if (bar) bar.style.width = (ratio * 100) + '%';
       if (current) current.textContent = formatListenTime(audio.currentTime);
+      const readerBody = $('#chapter-reader-slot .chapter-body.narrative-article');
+      if (readerBody && typeof updateSentenceHighlight === 'function' && isFinite(audio.duration) && audio.duration > 0) {
+        updateSentenceHighlight(readerBody, ratio);
+      }
+      updateGlobalMiniPlayerProgress();
     });
-    audio.addEventListener('play', () => { stopOtherAudio(audio); setStudioToggle(true); });
-    audio.addEventListener('pause', () => setStudioToggle(false));
-    audio.addEventListener('ended', () => stepStudioTrack(1));
+    audio.addEventListener('play', () => { stopOtherAudio(audio); setStudioToggle(true); updateGlobalMiniPlayer(); });
+    audio.addEventListener('pause', () => {
+      setStudioToggle(false);
+      const readerBody = $('#chapter-reader-slot .chapter-body.narrative-article');
+      if (readerBody && typeof clearSentenceHighlight === 'function') clearSentenceHighlight(readerBody);
+      updateGlobalMiniPlayer();
+    });
+    audio.addEventListener('ended', () => {
+      const readerBody = $('#chapter-reader-slot .chapter-body.narrative-article');
+      if (readerBody && typeof clearSentenceHighlight === 'function') clearSentenceHighlight(readerBody);
+      stepStudioTrack(1);
+    });
     audio.playbackRate = getListenRate();
     rememberAudioPosition(audio, () => studioState.tracks[studioState.index]?.output);
     studioState.audio = audio;
@@ -2152,14 +2507,37 @@ function studioAudio() {
   return studioState.audio;
 }
 
-function playStudioTrack(index) {
+function playStudioTrack(index, startRatio = null) {
   const track = studioState.tracks[index];
   if (!track) return;
   selectStudioTrack(index);
   if (!track.output?.audio_available) { showMessage('本章音频还没生成，可以先点「一键生成全部章节音频」。'); return; }
   const audio = studioAudio();
-  audio.src = '/api/audio-outputs/' + track.output.id + '/stream?v=' + encodeURIComponent(track.output.updated_at);
+  const targetSrc = '/api/audio-outputs/' + track.output.id + '/stream?v=' + encodeURIComponent(track.output.updated_at);
+  audio.dataset.outputId = track.output.id;
+  studioState.projectId = appState.selectedProject?.project?.id || studioState.projectId;
+  studioState.projectName = appState.selectedProject?.project?.name || studioState.projectName;
+  if (!audio.src || !audio.src.endsWith(targetSrc)) {
+    audio.src = targetSrc;
+    if (startRatio != null) studioState.pendingRatio = startRatio;
+  } else if (startRatio != null && isFinite(audio.duration) && audio.duration > 0) {
+    audio.currentTime = Math.min(audio.duration - 0.2, Math.max(0, startRatio * audio.duration));
+  }
   audio.play().catch(() => {});
+  updateGlobalMiniPlayer();
+}
+
+function seekChapterByRatio(contentId, sectionId, ratio) {
+  if (!studioState.content || studioState.contentId !== contentId) return false;
+  const idx = studioState.tracks.findIndex(t => t.chapter.id === sectionId);
+  if (idx < 0) return false;
+  const track = studioState.tracks[idx];
+  if (!track.output?.audio_available) {
+    showMessage('本章音频尚未生成，生成后即可点句即听。');
+    return false;
+  }
+  playStudioTrack(idx, ratio);
+  return true;
 }
 
 function stepStudioTrack(step) {
@@ -2189,11 +2567,17 @@ function renderStudioScript() {
 function initStudioPlayer(content) {
   const root = $('#studio-player');
   if (!root || !content) return;
-  studioState.audio?.pause();
-  studioState.audio = null;
+  const keepingSameContent = studioState.contentId === content.id && studioState.audio && !studioState.audio.paused;
+  if (!keepingSameContent) {
+    studioState.audio?.pause();
+    studioState.audio = null;
+  }
   studioState.tracks = studioTracks(content);
   studioState.contentId = content.id;
   studioState.content = content;
+  studioState.projectId = appState.selectedProject?.project?.id || '';
+  studioState.projectName = appState.selectedProject?.project?.name || content.title || '';
+  const prevIndex = studioState.index;
   studioState.index = -1;
   const list = $('#studio-chapters');
   list.innerHTML = studioState.tracks.map((track, index) => {
@@ -2205,9 +2589,10 @@ function initStudioPlayer(content) {
   // 恢复上次收听的章节（只选中，不自动出声）
   const last = localStorage.getItem('shengxi-studio-last:' + content.id);
   const lastIndex = studioState.tracks.findIndex(track => track.chapter.heading === last && track.output?.audio_available);
-  const startIndex = lastIndex >= 0 ? lastIndex : studioState.tracks.findIndex(track => track.output?.audio_available);
+  const startIndex = keepingSameContent && prevIndex >= 0 ? prevIndex : (lastIndex >= 0 ? lastIndex : studioState.tracks.findIndex(track => track.output?.audio_available));
   if (startIndex >= 0) selectStudioTrack(startIndex);
   else renderStudioScript();
+  if (keepingSameContent) setStudioToggle(true);
   $('#studio-toggle').addEventListener('click', () => {
     const audio = studioAudio();
     if (!audio.src) { const ready = studioState.tracks[studioState.index]?.output?.audio_available ? studioState.index : studioState.tracks.findIndex(track => track.output?.audio_available); if (ready >= 0) playStudioTrack(ready); return; }
@@ -2215,6 +2600,16 @@ function initStudioPlayer(content) {
   });
   $('#studio-prev').addEventListener('click', () => stepStudioTrack(-1));
   $('#studio-next').addEventListener('click', () => stepStudioTrack(1));
+  $('#studio-back-15')?.addEventListener('click', () => {
+    const audio = studioAudio();
+    if (audio?.src) audio.currentTime = Math.max(0, (audio.currentTime || 0) - 15);
+  });
+  $('#studio-fwd-15')?.addEventListener('click', () => {
+    const audio = studioAudio();
+    if (audio?.src && isFinite(audio.duration)) audio.currentTime = Math.min(audio.duration, (audio.currentTime || 0) + 15);
+  });
+  $('#studio-sleep-btn')?.addEventListener('click', cycleDesktopSleepTimer);
+  syncDesktopSleepUi();
   $('#studio-bar-zone').addEventListener('click', event => {
     const audio = studioAudio();
     if (!audio?.duration) { if (!audio?.src) showMessage('先在右侧选择一章开始收听。'); return; }
@@ -2227,7 +2622,12 @@ function initStudioPlayer(content) {
     syncStudioRateButtons();
   }));
   syncStudioRateButtons();
-  $('#studio-script-toggle').addEventListener('click', () => {
+  $('#studio-script-toggle')?.addEventListener('click', () => {
+    const readerSlot = $('#chapter-reader-slot');
+    if (readerSlot) {
+      readerSlot.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return;
+    }
     const panel = $('#studio-script');
     const hidden = panel.classList.toggle('hidden');
     $('#studio-script-toggle').textContent = hidden ? '查看本章讲稿' : '收起讲稿';
@@ -2284,7 +2684,7 @@ async function generateAllChapterAudio(content, button) {
     appState.batchAudioRunning = false;
     appState.batchAudioCancel = false;
     renderProjectDetail();
-    if (failures.length) pushNotification('批量生成章节音频：' + failures.length + ' 章失败。' + failures.join('；'), { type: 'batch_audio', payload: { contentId: content.id } });
+    if (failures.length && typeof pushNotification === 'function') pushNotification('批量生成章节音频：' + failures.length + ' 章失败。' + failures.join('；'), { type: 'batch_audio', payload: { contentId: content.id } });
     if (cancelled) showMessage('已停止，完成 ' + completed + ' / ' + pending.length + ' 章' + (failures.length ? '；失败章节：' + failures.join('；') : '。'));
     else if (failures.length) showMessage('已完成 ' + completed + ' / ' + pending.length + ' 章；失败章节：' + failures.join('；') + '。可重新尝试未完成的章节。', true);
     else if (confirmed) showMessage('本次 ' + completed + ' 章音频已生成，点右侧章节即可连续收听。');
@@ -2310,13 +2710,14 @@ function renderStudioHero(content) {
     + '<img class="listen-cover" src="/img/cover-listen.jpg" alt="" />'
     + '<div class="listen-main"><b id="studio-title">选择一章开始收听</b><span class="listen-meta" id="studio-meta">共 ' + chapters.length + ' 章 · ' + ready + ' 章音频就绪 · ' + escapeHtml(content.title) + '</span>'
     + '<div class="listen-progress"><div class="listen-bar" id="studio-bar-zone" title="点击跳转进度"><i id="studio-bar"></i></div><span class="listen-time"><span id="studio-current">0:00</span> / <span id="studio-total">0:00</span></span></div>'
-    + '<div class="listen-controls"><button type="button" class="listen-ctrl" id="studio-prev" aria-label="上一章">⏮</button><button type="button" class="listen-toggle" id="studio-toggle" aria-label="播放 / 暂停">▶</button><button type="button" class="listen-ctrl" id="studio-next" aria-label="下一章">⏭</button></div>'
+    + '<div class="listen-controls"><button type="button" class="listen-ctrl" id="studio-prev" aria-label="上一章" title="上一章 ([)">⏮</button><button type="button" class="listen-step-btn" id="studio-back-15" aria-label="后退15秒" title="后退15秒 (←)">−15s</button><button type="button" class="listen-toggle" id="studio-toggle" aria-label="播放 / 暂停" title="播放 / 暂停 (Space)">▶</button><button type="button" class="listen-step-btn" id="studio-fwd-15" aria-label="快进15秒" title="快进15秒 (→)">+15s</button><button type="button" class="listen-ctrl" id="studio-next" aria-label="下一章" title="下一章 (])">⏭</button><button type="button" class="listen-sleep-btn" id="studio-sleep-btn" aria-label="睡眠定时" title="睡眠定时">定时</button></div>'
     + '<div class="listen-rate" id="studio-rate">' + rateButtons + '</div>'
-    + '<div class="studio-actions"><button type="button" class="button button-outline button-small" id="studio-script-toggle">查看本章讲稿</button>'
+    + '<div class="studio-actions"><button type="button" class="button button-outline button-small" id="studio-script-toggle">跳至本章正文 ↓</button>'
     + (chapters.length > 5 ? '<button type="button" class="button button-quiet button-small" id="studio-expand-chapters">展开全部 ' + chapters.length + ' 章</button>' : '')
     + (audioEnabled ? '<button type="button" class="button button-primary button-small" id="studio-generate-all"' + (content.status === 'confirmed' && !remaining ? ' disabled' : '') + '>' + (content.status === 'confirmed' ? (remaining ? (ready ? '生成剩余 ' + remaining + ' 章音频' : '一键生成全部章节音频') : '全部章节音频已就绪') : '一键生成全部章节脚本') + '</button>' : '')
     + (audioEnabled ? '<button type="button" class="button button-danger button-small" id="studio-cancel-batch" hidden>停止</button>' : '')
-    + '<span class="studio-batch-status" id="studio-batch-status" role="status"></span></div></div>'
+    + '<span class="studio-batch-status" id="studio-batch-status" role="status"></span></div>'
+    + '<p class="studio-kbd-hint">快捷键：<kbd>Space</kbd> 播放/暂停 · <kbd>←</kbd><kbd>→</kbd> ±15秒 · <kbd>[</kbd><kbd>]</kbd> 切章 · <kbd>M</kbd> 标记本章已学 · 点击正文任意句子即刻点读</p></div>'
     + '<ol class="listen-chapters" id="studio-chapters"></ol></div>'
     + '<div class="studio-script hidden" id="studio-script"></div></section>';
 }
@@ -2844,7 +3245,7 @@ async function initHomeSkillSection() {
     tag.textContent = '暂时无法检查模型配置';
   }
   const copy = $('#copy-skill-invoke');
-  if (copy) copy.addEventListener('click', async () => { const example = '请读取并按此 Skill 执行：https://github.com/donghyq/ListenWise/tree/main/skills/lawflow\n\n$lawflow 使用声息处理本地项目中的材料：先读取受控上下文，给出可确认的大纲，再将成稿回写并导出 DOCX。'; try { await navigator.clipboard.writeText(example); showMessage('已复制 GitHub Skill 链接与调用示例。'); } catch (_) { showMessage('浏览器未授权剪贴板，请手动复制。', true); } });
+  if (copy) copy.addEventListener('click', async () => { const example = '请读取并按此 Skill 执行：https://github.com/hey-elaine/lawflow/tree/main/skills/lawflow\n\n$lawflow 使用声息处理本地项目中的材料：先读取受控上下文，给出可确认的大纲，再将成稿回写并导出 DOCX。'; try { await navigator.clipboard.writeText(example); showMessage('已复制 GitHub Skill 链接与调用示例。'); } catch (_) { showMessage('浏览器未授权剪贴板，请手动复制。', true); } });
 }
 async function checkForUpdates(manual = false) {
   const notice = $('#update-notice');
@@ -2891,9 +3292,18 @@ async function boot() {
   enhanceSelects();
   new MutationObserver(() => { enhanceSelects(); $$('.select-box select').forEach(syncSelectBox); }).observe(document.body, { childList: true, subtree: true });
   $('#nav-shelf')?.addEventListener('click', event => { event.preventDefault(); showShelf(); });
+  $('#nav-home')?.addEventListener('click', event => { event.preventDefault(); goHome(); });
   $('#back-home')?.addEventListener('click', goHome);
   $('#hero-open-shelf')?.addEventListener('click', event => { event.preventDefault(); showShelf(); $('#quick-link-input')?.focus(); });
-  $('.brand')?.addEventListener('click', event => { event.preventDefault(); goHome(); });
+  $('.brand')?.addEventListener('click', event => {
+    event.preventDefault();
+    if ((appState.projects || []).length > 0 && !document.body.classList.contains('in-shelf')) showShelf();
+    else if (document.body.classList.contains('in-project')) showShelf();
+    else goHome();
+  });
+  initDesktopSleepTimer();
+  bindKeyboardShortcuts();
+  window.addEventListener('hashchange', applyRouteFromHash);
   if (window.location.protocol === 'file:') {
     showMessage('你正在打开源码页面。请打开已安装的声息 app 使用完整功能。', true);
     return;
@@ -2908,7 +3318,10 @@ async function boot() {
     appState.modelConfigured = !!(config.base_url && config.model_name && config.api_key);
     appState.modelUploadAllowed = !!config.allow_source_upload;
   } catch (error) { appState.modelConfigured = false; }
-  try { await Promise.all([loadProjects(), loadDailyBriefSubscriptions()]); } catch (error) { showMessage('无法连接本地服务：' + readableError(error), true); }
+  try {
+    await Promise.all([loadProjects(), loadDailyBriefSubscriptions(), loadSeriesOverview()]);
+    await applyRouteFromHash();
+  } catch (error) { showMessage('无法连接本地服务：' + readableError(error), true); }
 }
 document.addEventListener('DOMContentLoaded', boot);
 
@@ -2962,7 +3375,9 @@ async function initListenSection() {
   if (!player) return;
   try {
     const projects = appState.projects?.length ? appState.projects : await request('/api/projects');
-    const demo = projects.find(item => item.name === '示例：五分钟把收藏变成声音');
+    const demo = projects.find(item => item.name === '示例：五分钟把收藏变成声音' && item.production_stage?.has_ready_audio)
+      || projects.find(item => item.production_stage?.has_ready_audio)
+      || projects.find(item => item.name === '示例：五分钟把收藏变成声音');
     if (demo) {
       const detail = await request('/api/projects/' + demo.id);
       const tracks = orderedListenTracks(detail);
@@ -3258,3 +3673,285 @@ window.addEventListener('beforeunload', event => {
     event.returnValue = '';
   }
 });
+
+/* ===== 桌面端睡眠定时 + 全局驻留迷你吧台 (Mini-Player) + 键盘极客快捷键 ===== */
+const DESKTOP_SLEEP_KEY = 'shengxi-desktop-sleep';
+let desktopSleepEndsAt = 0;
+let desktopSleepMinutes = 0;
+let desktopSleepTimerId = null;
+
+function formatSleepCountdown(ms) {
+  const total = Math.max(0, Math.ceil(ms / 1000));
+  return Math.floor(total / 60) + ':' + String(total % 60).padStart(2, '0');
+}
+
+function syncDesktopSleepUi() {
+  const btn = $('#studio-sleep-btn');
+  if (!btn) return;
+  const remain = desktopSleepEndsAt - Date.now();
+  if (desktopSleepEndsAt > 0 && remain > 0) {
+    btn.textContent = '🌙 ' + formatSleepCountdown(remain);
+    btn.classList.add('active');
+  } else {
+    btn.textContent = '定时';
+    btn.classList.remove('active');
+  }
+}
+
+function stopDesktopSleepTimer(clearStore = true) {
+  desktopSleepEndsAt = 0;
+  desktopSleepMinutes = 0;
+  if (desktopSleepTimerId) { clearInterval(desktopSleepTimerId); desktopSleepTimerId = null; }
+  if (clearStore) { try { localStorage.removeItem(DESKTOP_SLEEP_KEY); } catch (_) {} }
+  syncDesktopSleepUi();
+}
+
+function tickDesktopSleepTimer() {
+  const remain = desktopSleepEndsAt - Date.now();
+  if (remain <= 0) {
+    studioState.audio?.pause();
+    listenState.audio?.pause();
+    $$('audio').forEach(a => a.pause());
+    stopDesktopSleepTimer(true);
+    showMessage('睡眠定时已到，已为你暂停播放。');
+    return;
+  }
+  syncDesktopSleepUi();
+}
+
+function cycleDesktopSleepTimer() {
+  const steps = [15, 30, 60, 0];
+  const next = steps[(steps.indexOf(desktopSleepMinutes) + 1) % steps.length];
+  if (!next) {
+    stopDesktopSleepTimer(true);
+    showMessage('已关闭睡眠定时。');
+    return;
+  }
+  desktopSleepMinutes = next;
+  desktopSleepEndsAt = Date.now() + next * 60000;
+  try { localStorage.setItem(DESKTOP_SLEEP_KEY, JSON.stringify({ endsAt: desktopSleepEndsAt, minutes: next })); } catch (_) {}
+  if (desktopSleepTimerId) clearInterval(desktopSleepTimerId);
+  desktopSleepTimerId = setInterval(tickDesktopSleepTimer, 1000);
+  syncDesktopSleepUi();
+  showMessage('已开启睡眠定时：' + next + ' 分钟后自动暂停。');
+}
+
+function initDesktopSleepTimer() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(DESKTOP_SLEEP_KEY) || 'null');
+    if (saved && Number(saved.endsAt) > Date.now() && [15, 30, 60].includes(Number(saved.minutes))) {
+      desktopSleepMinutes = Number(saved.minutes);
+      desktopSleepEndsAt = Number(saved.endsAt);
+      desktopSleepTimerId = setInterval(tickDesktopSleepTimer, 1000);
+    } else if (saved) {
+      localStorage.removeItem(DESKTOP_SLEEP_KEY);
+    }
+  } catch (_) {}
+}
+
+function ensureGlobalMiniPlayer() {
+  let bar = $('#global-mini-player');
+  if (bar) return bar;
+  bar = document.createElement('aside');
+  bar.id = 'global-mini-player';
+  bar.className = 'global-mini-player hidden';
+  bar.setAttribute('aria-label', '全局迷你播放器');
+  bar.innerHTML = '<div class="mini-player-progress"><i id="mini-player-bar"></i></div>'
+    + '<div class="mini-player-inner">'
+    + '<div class="mini-player-info"><span class="mini-player-kicker">正在收听</span><b id="mini-player-title">—</b><small id="mini-player-sub"></small></div>'
+    + '<div class="mini-player-controls">'
+    + '<button type="button" class="mini-ctrl" id="mini-prev" title="上一章 ([)">⏮</button>'
+    + '<button type="button" class="mini-ctrl mini-step" id="mini-back" title="后退15秒 (←)">−15s</button>'
+    + '<button type="button" class="mini-toggle" id="mini-toggle" title="播放 / 暂停 (Space)">▶</button>'
+    + '<button type="button" class="mini-ctrl mini-step" id="mini-fwd" title="快进15秒 (→)">+15s</button>'
+    + '<button type="button" class="mini-ctrl" id="mini-next" title="下一章 (])">⏭</button>'
+    + '<button type="button" class="mini-rate" id="mini-player-rate" title="切换倍速">' + getListenRate() + '×</button>'
+    + '<span class="mini-time" id="mini-player-time">0:00 / 0:00</span>'
+    + '</div>'
+    + '<div class="mini-player-actions">'
+    + '<button type="button" class="button button-outline button-small" id="mini-jump-book">回到章节 →</button>'
+    + '<button type="button" class="icon-button mini-close" id="mini-close" aria-label="关闭迷你播放器" title="停止并收起">×</button>'
+    + '</div></div>';
+  document.body.appendChild(bar);
+  $('#mini-toggle', bar).addEventListener('click', () => {
+    const audio = studioState.audio;
+    if (!audio) return;
+    if (audio.paused) audio.play().catch(() => {}); else audio.pause();
+  });
+  $('#mini-prev', bar).addEventListener('click', () => stepStudioTrack(-1));
+  $('#mini-next', bar).addEventListener('click', () => stepStudioTrack(1));
+  $('#mini-back', bar).addEventListener('click', () => {
+    if (studioState.audio) studioState.audio.currentTime = Math.max(0, (studioState.audio.currentTime || 0) - 15);
+  });
+  $('#mini-fwd', bar).addEventListener('click', () => {
+    if (studioState.audio && isFinite(studioState.audio.duration)) {
+      studioState.audio.currentTime = Math.min(studioState.audio.duration, (studioState.audio.currentTime || 0) + 15);
+    }
+  });
+  $('#mini-player-rate', bar).addEventListener('click', () => {
+    const rates = [1, 1.25, 1.5, 2];
+    const next = rates[(rates.indexOf(getListenRate()) + 1) % rates.length];
+    localStorage.setItem('shengxi-listen-rate', String(next));
+    if (studioState.audio) studioState.audio.playbackRate = next;
+    syncStudioRateButtons();
+  });
+  $('#mini-jump-book', bar).addEventListener('click', async () => {
+    if (!studioState.projectId) return;
+    await openProjectTab(studioState.projectId, 'audio');
+  });
+  $('#mini-close', bar).addEventListener('click', () => {
+    studioState.audio?.pause();
+    if (studioState.audio) studioState.audio.removeAttribute('src');
+    bar.classList.add('hidden');
+  });
+  return bar;
+}
+
+function updateGlobalMiniPlayer() {
+  const audio = studioState.audio;
+  const track = studioState.tracks?.[studioState.index];
+  const bar = ensureGlobalMiniPlayer();
+  const onSameAudioTab = document.body.classList.contains('in-project')
+    && appState.selectedProjectId === studioState.projectId
+    && appState.activeTab === 'audio'
+    && !!$('#studio-player');
+  if (!audio || !audio.src || !track || onSameAudioTab) {
+    bar.classList.add('hidden');
+    return;
+  }
+  bar.classList.remove('hidden');
+  $('#mini-player-title', bar).textContent = track.chapter.heading;
+  $('#mini-player-sub', bar).textContent = studioState.projectName || '';
+  $('#mini-toggle', bar).textContent = audio.paused ? '▶' : '❚❚';
+  $('#mini-player-rate', bar).textContent = getListenRate() + '×';
+  updateGlobalMiniPlayerProgress();
+}
+
+function updateGlobalMiniPlayerProgress() {
+  const bar = $('#global-mini-player');
+  const audio = studioState.audio;
+  if (!bar || bar.classList.contains('hidden') || !audio) return;
+  const ratio = audio.duration ? (audio.currentTime / audio.duration) * 100 : 0;
+  const fill = $('#mini-player-bar', bar);
+  if (fill) fill.style.width = ratio + '%';
+  const time = $('#mini-player-time', bar);
+  if (time) time.textContent = formatListenTime(audio.currentTime || 0) + ' / ' + formatListenTime(audio.duration || studioState.tracks?.[studioState.index]?.output?.duration_seconds || 0);
+}
+
+function bindKeyboardShortcuts() {
+  document.addEventListener('keydown', event => {
+    if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return;
+    const target = event.target;
+    if (target instanceof HTMLElement && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))) return;
+    if ($('dialog[open]') || $('.source-modal') || $('.fact-check-overlay')) return;
+    const activeStudio = (document.body.classList.contains('in-project') && appState.activeTab === 'audio' && $('#studio-player'))
+      || (studioState.audio && studioState.audio.src);
+    if (!activeStudio) return;
+    if (event.key === ' ' && !(target instanceof HTMLButtonElement || target instanceof HTMLAnchorElement || target instanceof HTMLElement && target.getAttribute('role') === 'button')) {
+      event.preventDefault();
+      const audio = studioAudio();
+      if (!audio.src) {
+        const ready = studioState.tracks[studioState.index]?.output?.audio_available ? studioState.index : studioState.tracks.findIndex(t => t.output?.audio_available);
+        if (ready >= 0) playStudioTrack(ready);
+      } else if (audio.paused) {
+        audio.play().catch(() => {});
+      } else {
+        audio.pause();
+      }
+    } else if (event.key === 'ArrowLeft') {
+      const audio = studioState.audio;
+      if (audio?.src) { event.preventDefault(); audio.currentTime = Math.max(0, (audio.currentTime || 0) - 15); }
+    } else if (event.key === 'ArrowRight') {
+      const audio = studioState.audio;
+      if (audio?.src && isFinite(audio.duration)) { event.preventDefault(); audio.currentTime = Math.min(audio.duration, (audio.currentTime || 0) + 15); }
+    } else if (event.key === '[') {
+      event.preventDefault();
+      stepStudioTrack(-1);
+    } else if (event.key === ']') {
+      event.preventDefault();
+      stepStudioTrack(1);
+    } else if (event.key === 'm' || event.key === 'M') {
+      const learnedBtn = $('#detail-panel [data-chapter-action="learned"]');
+      if (learnedBtn && !learnedBtn.disabled) {
+        event.preventDefault();
+        learnedBtn.click();
+      }
+    }
+  });
+}
+
+/* ===== 「带到手机听」纸感书签弹窗（集成单书与整座书架二维码切换 + 多网卡 IP 切换） ===== */
+async function openMobilePassModal() {
+  $('.mobile-pass-overlay')?.remove();
+  const project = appState.selectedProject?.project;
+  if (!project) return;
+  const overlay = document.createElement('div');
+  overlay.className = 'source-modal mobile-pass-overlay';
+  overlay.innerHTML = '<div class="source-modal-card mobile-pass-card">'
+    + '<div class="source-modal-top"><div><p class="eyebrow">声息 · 随身书签</p><h3>把声音带到路上听</h3></div><button type="button" class="icon-button" data-pass-close aria-label="关闭">×</button></div>'
+    + '<div class="mobile-pass-tabs" role="tablist">'
+    + '<button type="button" class="mobile-pass-tab active" data-pass-mode="book">📖 仅带走本书</button>'
+    + '<button type="button" class="mobile-pass-tab" data-pass-mode="library">📚 带走整个书架</button>'
+    + '</div>'
+    + '<div id="mobile-pass-body" class="mobile-pass-body"><p class="form-note">正在生成随身收听二维码…</p></div>'
+    + '</div>';
+  document.body.appendChild(overlay);
+  $('[data-pass-close]', overlay).addEventListener('click', () => overlay.remove());
+  overlay.addEventListener('click', event => { if (event.target === overlay) overlay.remove(); });
+
+  const renderMode = async (mode) => {
+    $$('.mobile-pass-tab', overlay).forEach(t => t.classList.toggle('active', t.dataset.passMode === mode));
+    const body = $('#mobile-pass-body', overlay);
+    body.innerHTML = '<p class="form-note">正在生成二维码…</p>';
+    try {
+      const port = window.location.port ? ':' + window.location.port : '';
+      const isBook = mode === 'book';
+      const share = await request(isBook ? ('/api/projects/' + project.id + '/mobile-share') : '/api/mobile-library/share', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const ips = Array.isArray(share.lan_ips) && share.lan_ips.length ? share.lan_ips : [share.lan_ip || '127.0.0.1'];
+      let currentHost = localStorage.getItem('shengxi-preferred-lan-ip') || share.lan_ip || ips[0];
+      if (!ips.includes(currentHost) && currentHost === '127.0.0.1' && ips[0]) currentHost = ips[0];
+      const qrBase = isBook ? ('/api/projects/' + project.id + '/mobile-share/qr?url=') : '/api/mobile-library/qr?url=';
+      const expiry = new Date(share.expires_at).toLocaleString('zh-CN', { hour12: false });
+      const hostOptions = [...new Set([...ips, currentHost])].map(ip => '<option value="' + escapeHtml(ip) + '"' + (ip === currentHost ? ' selected' : '') + '>' + escapeHtml(ip) + '</option>').join('');
+      const buildUrl = host => 'http://' + (host || share.lan_ip) + port + share.path;
+      let activeUrl = buildUrl(currentHost);
+      body.innerHTML = '<div class="mobile-pass-ticket">'
+        + '<img class="mobile-share-qr" id="pass-qr-img" alt="手机收听二维码" src="' + qrBase + encodeURIComponent(activeUrl) + '" />'
+        + '<div class="mobile-pass-meta"><h4>' + escapeHtml(isBook ? project.name : ('我的整个声息书架（共 ' + Number(share.book_count || 0) + ' 本有声书）')) + '</h4>'
+        + '<p>' + (isBook ? '手机与电脑连接同一 Wi-Fi，用相机扫码即可按章收听、对照文稿、定时睡眠，或一键缓存到手机离线播放。' : '一次扫码即可在手机上浏览书架全部有声书、按章收听、同步学习进度或下载整书 ZIP。') + '</p>'
+        + '<div class="pass-host-row"><label>局域网地址<select id="pass-host-select" data-custom="1">' + hostOptions + '</select></label><input id="pass-host-custom" class="pass-host-custom" value="' + escapeHtml(currentHost) + '" aria-label="自定义局域网 IP" title="如开启 VPN 可手动输入本机 Wi-Fi IP" /></div>'
+        + '<p class="mobile-share-url"><a id="pass-url-link" href="' + escapeHtml(activeUrl) + '" target="_blank" rel="noreferrer">' + escapeHtml(activeUrl) + '</a></p>'
+        + '<div class="audio-tool-actions"><button type="button" class="button button-primary button-small" id="pass-copy-url">复制收听链接</button><button type="button" class="button button-quiet button-small" id="pass-revoke">吊销链接</button></div>'
+        + '<small class="field-hint">有效期至 ' + escapeHtml(expiry) + ' · 声息运行时可访问</small></div></div>';
+      const updateHost = newHost => {
+        const clean = String(newHost || '').trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/:\d+$/, '');
+        if (!clean) return;
+        currentHost = clean;
+        try { localStorage.setItem('shengxi-preferred-lan-ip', clean); } catch (_) {}
+        activeUrl = buildUrl(clean);
+        const img = $('#pass-qr-img', body);
+        if (img) img.src = qrBase + encodeURIComponent(activeUrl);
+        const link = $('#pass-url-link', body);
+        if (link) { link.href = activeUrl; link.textContent = activeUrl; }
+      };
+      $('#pass-host-select', body)?.addEventListener('change', event => {
+        const val = event.target.value;
+        const custom = $('#pass-host-custom', body);
+        if (custom) custom.value = val;
+        updateHost(val);
+      });
+      $('#pass-host-custom', body)?.addEventListener('change', event => updateHost(event.target.value));
+      $('#pass-copy-url', body)?.addEventListener('click', async () => {
+        try { await navigator.clipboard.writeText(activeUrl); showMessage('收听链接已复制。'); } catch (_) { window.prompt('复制链接：', activeUrl); }
+      });
+      $('#pass-revoke', body)?.addEventListener('click', async () => {
+        await request(isBook ? ('/api/projects/' + project.id + '/mobile-share') : '/api/mobile-library/share', { method: 'DELETE' });
+        body.innerHTML = '<p class="form-note">收听链接已吊销。</p>';
+      });
+    } catch (error) {
+      body.innerHTML = '<p class="message error">' + escapeHtml(error.message || '生成二维码失败') + '</p>';
+    }
+  };
+  $$('.mobile-pass-tab', overlay).forEach(tab => tab.addEventListener('click', () => renderMode(tab.dataset.passMode)));
+  renderMode('book');
+}

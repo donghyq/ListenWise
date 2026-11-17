@@ -67,6 +67,9 @@ class MobileLibraryTest(unittest.TestCase):
         self.assertEqual(stream.status_code, 200)
         download = self.client.get(f"/m/library/{token}/book/{first['id']}/audio/{audio_id}?download=1")
         self.assertEqual(download.status_code, 200)
+        bundle = self.client.get(f"/m/library/{token}/book/{first['id']}/download")
+        self.assertEqual(bundle.status_code, 200)
+        self.assertIn("application/zip", bundle.headers["content-type"])
 
         # 重新生成会吊销旧链接
         renewed = self.client.post("/api/mobile-library/share").json()

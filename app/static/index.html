@@ -12,7 +12,7 @@
 <body>
   <header class="nav shell">
     <a class="brand" href="#top" aria-label="声息首页"><span class="brand-row"><span class="brand-name">声息</span><span class="brand-sub">Shengxi</span></span></a>
-    <nav><a href="#top" id="nav-shelf">我的书架</a></nav>
+    <nav><a href="#/shelf" id="nav-shelf">我的书架</a><a href="#/home" id="nav-home">关于与指南</a></nav>
     <button class="button button-quiet notification-bell" id="open-notifications" aria-label="通知中心" title="通知中心"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 8-3 8h18s-3-1-3-8"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg><i class="bell-dot" id="bell-dot" hidden></i></button>
     <button class="button button-quiet" id="open-settings">设置</button>
   </header>
@@ -104,12 +104,31 @@
               <option value="name">名称</option>
               <option value="duration">时长</option>
               <option value="progress">学习进度</option>
+              <option value="series">系列归类</option>
             </select>
           </label>
+          <div class="shelf-view-toggle" role="group" aria-label="书架视图切换">
+            <button type="button" class="shelf-view-btn active" data-shelf-view="grid" title="画廊视图" aria-label="画廊视图">⊞</button>
+            <button type="button" class="shelf-view-btn" data-shelf-view="list" title="紧凑列表视图" aria-label="紧凑列表视图">☰</button>
+          </div>
+          <button type="button" class="button button-outline button-small" id="shelf-batch-toggle">批量管理</button>
+        </div>
+      </div>
+      <div id="shelf-batch-bar" class="shelf-batch-bar hidden" role="region" aria-label="批量操作栏">
+        <div class="shelf-batch-left">
+          <button type="button" class="button button-quiet button-small" id="shelf-select-all">全选当前列表</button>
+          <button type="button" class="button button-quiet button-small" id="shelf-select-none">取消全选</button>
+          <span id="shelf-batch-count">已选 0 项</span>
+        </div>
+        <div class="shelf-batch-actions">
+          <button type="button" class="button button-outline button-small" id="shelf-batch-collection" disabled>归入收藏夹…</button>
+          <button type="button" class="button button-outline button-small" id="shelf-batch-series" disabled>归入系列…</button>
+          <button type="button" class="button button-danger button-small" id="shelf-batch-delete" disabled>批量删除</button>
         </div>
       </div>
       <div id="workspace-message" class="message hidden" role="status" aria-live="polite"></div>
       <div id="daily-brief-list" class="daily-brief-list"></div>
+      <div id="series-overview" class="series-overview"></div>
       <div id="project-list" class="project-grid"><div class="empty-state"><b>还没有项目</b><p>从一篇想听的文章开始。</p></div></div>
       <div id="project-detail" class="project-detail hidden"></div>
     </section>
@@ -122,7 +141,7 @@
         <article><span class="skill-index">03</span><h3>复制给外部 AI 助手</h3><p>把选定的材料包复制到任意 AI 助手（ChatGPT、千问等）生成 Markdown，再将结果粘贴回声息审阅。</p><small>适合偶尔整理文章；无需配置模型密钥。</small></article>
       </div>
       <div class="skill-invoke audio-invoke"><div><p class="eyebrow">声音能力</p><h3>从文字到有声书</h3><p>好文章可直接朗读，也可以整理成章节音频。在同一 Wi-Fi 下发送到手机收听，或导出 MP3、M4B 保存。</p></div><div class="skill-invoke-actions"><button class="button button-outline button-small" id="home-open-audio-settings">连接语音服务</button></div></div>
-      <div class="skill-invoke"><div><p class="eyebrow">Agent 使用方式</p><h3>安装 Skill，在对话中调用</h3><p>安装声息 Skill 后，在 Agent 对话中输入 <code>$lawflow</code> 和你的任务。声息会保留材料范围与审阅步骤。</p></div><div class="skill-invoke-actions"><a class="button button-outline button-small" href="https://github.com/donghyq/ListenWise/tree/main/skills/lawflow" target="_blank" rel="noreferrer">查看安装说明</a><button class="button button-outline button-small" id="copy-skill-invoke">复制调用示例</button></div></div>
+      <div class="skill-invoke"><div><p class="eyebrow">Agent 使用方式</p><h3>安装 Skill，在对话中调用</h3><p>安装声息 Skill 后，在 Agent 对话中输入 <code>$lawflow</code> 和你的任务。声息会保留材料范围与审阅步骤。</p></div><div class="skill-invoke-actions"><a class="button button-outline button-small" href="https://github.com/hey-elaine/lawflow/tree/main/skills/lawflow" target="_blank" rel="noreferrer">查看安装说明</a><button class="button button-outline button-small" id="copy-skill-invoke">复制调用示例</button></div></div>
     </section>
   </main>
 

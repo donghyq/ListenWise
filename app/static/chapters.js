@@ -101,8 +101,14 @@ function buildSentenceSpans(container) {
     let buf = '';
     const flush = () => {
       if (!buf) return;
+      if (!buf.trim()) {
+        frag.appendChild(document.createTextNode(buf));
+        buf = '';
+        return;
+      }
       const span = document.createElement('span');
       span.className = 'fc-sentence';
+      span.title = '点击从这句开始收听';
       span.textContent = buf;
       frag.appendChild(span);
       items.push({ el: span, start: offset, end: offset + buf.length });
@@ -116,6 +122,10 @@ function buildSentenceSpans(container) {
     flush();
     node.parentNode.replaceChild(frag, node);
   });
+  items.forEach(item => {
+    item.ratio = offset > 0 ? item.start / offset : 0;
+    item.el.dataset.sentenceRatio = String(item.ratio.toFixed(4));
+  });
   fcSentenceMaps.set(container, { items, total: offset, active: null });
 }
 
@@ -128,6 +138,10 @@ function updateSentenceHighlight(container, ratio) {
   if (map.active?.el) map.active.el.classList.remove('fc-sentence-active');
   item.el.classList.add('fc-sentence-active');
   map.active = item;
+  const rect = item.el.getBoundingClientRect();
+  if (rect.top < 110 || rect.bottom > window.innerHeight - 110) {
+    item.el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
 }
 
 function clearSentenceHighlight(container) {
@@ -156,6 +170,7 @@ function chapterAudioLabel(audio) {
 }
 function renderChapterWorkbench(content, options = {}) {
   const showSidebar = options.sidebar !== false;
+  const studioControlled = !!options.studioControlled;
   const chapters = content.chapters || [];
   if (!chapters.length) return '<p>请刷新项目以读取章节。</p>';
   appState.chapterFocus ||= {};
@@ -174,11 +189,15 @@ function renderChapterWorkbench(content, options = {}) {
     const pending = appState.chapterDrafts?.[chapterDraftKey(content.id, chapter.id)];
     return '<button type="button" class="chapter-nav-item' + (chapter.id === focused.id ? ' active' : '') + '" data-chapter-select="' + content.id + '" data-section-id="' + escapeHtml(chapter.id) + '" aria-pressed="' + (chapter.id === focused.id) + '"><span class="chapter-number">' + String(index + 1).padStart(2, '0') + '</span><span><b>' + escapeHtml(chapter.heading) + '</b><small>' + chapter.body.length + ' 字' + (audioEnabled ? ' · ' + chapterAudioLabel(track) : '') + (pending?.candidate ? ' · 有候选稿' : pending?.mode === 'edit' ? ' · 编辑中' : '') + '</small></span>' + (completed.has(chapter.reading_id) ? '<i aria-label="已学">✓</i>' : '') + '</button>';
   }).join('') + '</div><button class="button button-quiet button-small" data-outline-feedback="' + content.outline_id + '">调整章节划分与顺序 →</button></div></aside>' : '';
-  const player = audio?.audio_available
-    ? '<div class="chapter-player"><audio controls preload="metadata" data-chapter-player="' + audio.id + '" src="/api/audio-outputs/' + audio.id + '/stream?v=' + encodeURIComponent(audio.updated_at) + '"></audio><label>倍速<select data-chapter-rate><option value="1">1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option></select></label>' + button('export-audio', '保存 MP3') + '</div>'
-    : '<p class="chapter-audio-hint">' + (audio?.status === 'source_changed' ? '本章正文已修改。确认讲稿后更新音频，手机端也会使用更新后的音频。' : '本章还没有可播放音频。' + (content.status !== 'confirmed' ? '先确认讲稿，再生成正式音频。' : '')) + '</p>';
-  const audioBar = audioEnabled ? '<section class="chapter-audio-bar" aria-label="本章音频"><div class="chapter-audio-title"><b>本章音频</b><span class="tag">' + chapterAudioLabel(audio) + (audio?.audio_available ? ' · ' + formatListenTime(audio.duration_seconds || 0) : '') + '</span>' + button('audio', audio?.audio_available ? '重新生成' : audio?.status === 'source_changed' ? '更新本章音频' : '生成本章音频', 'button-outline', draft.busy) + '</div>' + player + '</section>' : '';
-  let body = '<div class="chapter-body narrative-article">' + renderNarrativeHtml(focused.body, content.id) + '</div>';
+  const player = studioControlled
+    ? (audio?.audio_available
+      ? '<div class="chapter-player chapter-player-studio"><span class="chapter-studio-sync">💡 由上方播客播放器连续播放 · <b>点击下方正文任意句子可直接从该句开始听</b></span>' + button('export-audio', '保存本章 MP3') + '</div>'
+      : '<p class="chapter-audio-hint">' + (audio?.status === 'source_changed' ? '本章正文已修改。确认讲稿后更新音频，手机端也会使用更新后的音频。' : '本章还没有可播放音频。' + (content.status !== 'confirmed' ? '先确认讲稿，再生成正式音频。' : '')) + '</p>')
+    : (audio?.audio_available
+      ? '<div class="chapter-player"><audio controls preload="metadata" data-chapter-player="' + audio.id + '" src="/api/audio-outputs/' + audio.id + '/stream?v=' + encodeURIComponent(audio.updated_at) + '"></audio><label>倍速<select data-chapter-rate><option value="1">1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option></select></label>' + button('export-audio', '保存 MP3') + '</div>'
+      : '<p class="chapter-audio-hint">' + (audio?.status === 'source_changed' ? '本章正文已修改。确认讲稿后更新音频，手机端也会使用更新后的音频。' : '本章还没有可播放音频。' + (content.status !== 'confirmed' ? '先确认讲稿，再生成正式音频。' : '')) + '</p>');
+  const audioBar = audioEnabled ? '<section class="chapter-audio-bar" aria-label="本章音频"><div class="chapter-audio-title"><b>本章音频</b><span class="tag">' + chapterAudioLabel(audio) + (audio?.audio_available ? ' · ' + formatListenTime(audio.duration_seconds || 0) : '') + '</span>' + button('audio', audio?.audio_available ? '重新生成本章音频' : audio?.status === 'source_changed' ? '更新本章音频' : '生成本章音频', 'button-outline', draft.busy) + '</div>' + player + '</section>' : '';
+  let body = '<div class="chapter-body narrative-article" ' + attr + '>' + renderNarrativeHtml(focused.body, content.id) + '</div>';
   if (draft.mode === 'edit') body = '<label class="chapter-edit-label">修改本章正文<textarea class="chapter-editor" data-chapter-body ' + attr + '>' + escapeHtml(draft.body) + '</textarea></label><div class="chapter-action-row">' + button('save', '保存本章修改', 'button-primary', draft.busy) + button('cancel', '取消编辑', 'button-quiet', draft.busy) + '<small>保存后仅这一章和整篇音频需要更新。</small></div>';
   const feedback = draft.mode === 'feedback' || draft.candidate ? '<section class="chapter-feedback"><h4>这章希望怎样修改？</h4><p>可以引用具体段落，说明应保留、删减或重新解释的内容。只会生成本章候选稿。</p><div class="feedback-presets">' + ['减少重复、表达更简洁', '保留更多原文细节', '解释术语，降低理解难度', '调整论述顺序和衔接'].map(text => '<button class="button button-quiet button-small" data-feedback-preset="' + text + '" ' + attr + '>' + text + '</button>').join('') + '</div><label>修改意见<textarea data-chapter-feedback ' + attr + ' placeholder="例如：第二段重复了第一段的背景。请合并说明；保留原文的日期和限制条件，最后再解释它与本章主题的关系。">' + escapeHtml(draft.instructions) + '</textarea></label><label class="check-label chapter-auto-audio"><input type="checkbox" data-auto-update-audio' + (localStorage.getItem('shengxi-auto-update-audio') !== 'false' ? ' checked' : '') + '/> 采用后自动更新本章音频</label><div class="chapter-action-row">' + button('preview', draft.busy ? '正在生成候选稿…' : '按意见生成候选稿', 'button-primary', draft.busy) + button('cancel', '关闭修改意见', 'button-quiet', draft.busy) + '</div></section>' : '';
   const candidate = draft.candidate ? '<section class="chapter-comparison" aria-label="修改前后对照"><div class="chapter-comparison-head"><h4>检查候选稿</h4><p>尚未替换正文。你可以继续修改右侧文字，再决定是否采用。</p></div><div class="chapter-comparison-grid"><div><b>当前正文</b><div class="chapter-original narrative-article">' + renderNarrativeHtml(draft.candidate.original, content.id) + '</div></div><label>候选稿<textarea class="chapter-editor" data-chapter-candidate ' + attr + '>' + escapeHtml(draft.candidate.body) + '</textarea></label></div><div class="chapter-action-row">' + button('apply', '采用候选稿', 'button-primary', draft.busy) + button('discard', '保留原稿', 'button-outline', draft.busy) + '</div></section>' : '';
@@ -202,6 +221,67 @@ function bindChapterWorkbench(root = $('#detail-panel')) {
     if (container.dataset.fcBuilt) return;
     container.dataset.fcBuilt = '1';
     try { buildSentenceSpans(container); } catch (_) { /* 分句失败时保持普通阅读体验 */ }
+    container.addEventListener('click', event => {
+      const sel = window.getSelection?.()?.toString().trim();
+      if (sel) return;
+      const span = event.target.closest('.fc-sentence');
+      if (!span) return;
+      const ratio = Number(span.dataset.sentenceRatio || 0);
+      const contentId = container.dataset.contentId;
+      const sectionId = container.dataset.sectionId;
+      if (typeof seekChapterByRatio === 'function' && seekChapterByRatio(contentId, sectionId, ratio)) {
+        updateSentenceHighlight(container, ratio);
+        return;
+      }
+      const inlinePlayer = container.closest('.chapter-main')?.querySelector('audio[data-chapter-player]');
+      if (inlinePlayer) {
+        const applyInlineSeek = () => {
+          if (isFinite(inlinePlayer.duration) && inlinePlayer.duration > 0) {
+            inlinePlayer.currentTime = Math.min(inlinePlayer.duration - 0.2, Math.max(0, ratio * inlinePlayer.duration));
+          }
+          inlinePlayer.play().catch(() => {});
+        };
+        if (inlinePlayer.readyState >= 1) applyInlineSeek();
+        else { inlinePlayer.addEventListener('loadedmetadata', applyInlineSeek, { once: true }); inlinePlayer.load(); }
+      }
+    });
+    container.addEventListener('mouseup', () => {
+      const sel = window.getSelection?.();
+      const text = sel ? sel.toString().trim() : '';
+      $('.fc-quote-popover')?.remove();
+      if (!text || text.length < 4 || text.length > 500) return;
+      if (!container.contains(sel.anchorNode)) return;
+      const range = sel.getRangeAt(0);
+      const rect = range.getBoundingClientRect();
+      const pop = document.createElement('div');
+      pop.className = 'fc-quote-popover';
+      pop.style.top = Math.max(12, rect.top + window.scrollY - 44) + 'px';
+      pop.style.left = Math.min(window.innerWidth - 280, Math.max(12, rect.left + window.scrollX)) + 'px';
+      pop.innerHTML = '<button type="button" data-quote-act="concise">✨ 精简这段</button>'
+        + '<button type="button" data-quote-act="explain">💡 解释术语</button>'
+        + '<button type="button" data-quote-act="feedback">✎ 引用并提意见</button>';
+      document.body.appendChild(pop);
+      $$('[data-quote-act]', pop).forEach(btn => btn.addEventListener('click', event => {
+        event.stopPropagation();
+        const act = btn.dataset.quoteAct;
+        pop.remove();
+        const content = appState.selectedProject?.narrative_contents?.find(c => c.id === container.dataset.contentId);
+        const chapter = content?.chapters?.find(c => c.id === container.dataset.sectionId);
+        if (!content || !chapter) return;
+        const draft = chapterDraft(content, chapter);
+        const snippet = text.length > 80 ? text.slice(0, 80) + '…' : text;
+        const prefix = act === 'concise'
+          ? '针对「' + snippet + '」这段：请删减重复表述，改得更精炼顺口。'
+          : act === 'explain'
+            ? '针对「' + snippet + '」这段：请用通俗口语解释其中的专业术语和背景。'
+            : '针对「' + snippet + '」这段：';
+        draft.mode = 'feedback';
+        draft.instructions = [draft.instructions, prefix].filter(Boolean).join('\n');
+        renderActivePanel();
+        const box = $('[data-chapter-feedback]');
+        if (box) { box.scrollIntoView({ behavior: 'smooth', block: 'center' }); box.focus(); }
+      }));
+    });
   });
   $$('[data-chapter-select]', panel).forEach(button => button.addEventListener('click', () => {
     stopOtherAudio();

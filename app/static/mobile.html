@@ -118,12 +118,13 @@ header .library-link:active { opacity: .7; }
   var api = mode === 'A' ? '/m/' + encodeURIComponent(token)
     : mode === 'B' ? '/m/library/' + encodeURIComponent(token)
     : '/m/library/' + encodeURIComponent(token) + '/book/' + encodeURIComponent(pid);
-  /* 学习进度只与单书 token 绑定；书架模式 C 不调用 /progress。*/
-  var progressEnabled = mode === 'A';
+  /* 单书模式 A 与书架单书模式 C 均支持学习进度回写。*/
+  var progressEnabled = mode === 'A' || mode === 'C';
   /* 离线缓存 IDB key 带 pid，书架内不同书互不串缓存。*/
   function cacheKey(id) { return mode === 'C' ? pid + ':' + id : id; }
   function bookStoreKey() { return mode === 'C' ? token + ':' + pid : token; }
   function lastChapterKey() { return 'sx-last-chapter:' + token + (pid ? ':' + pid : ''); }
+  function progressQueueKey() { return 'sx-queue:' + token + (pid ? ':' + pid : ''); }
   var audio = document.getElementById('audio');
   var chapters = [];
   var current = -1;
@@ -313,15 +314,15 @@ header .library-link:active { opacity: .7; }
 
   function queueProgress(ch, completed) {
     var queue = [];
-    try { queue = JSON.parse(localStorage.getItem('sx-queue:' + token) || '[]'); } catch (error) {}
+    try { queue = JSON.parse(localStorage.getItem(progressQueueKey()) || '[]'); } catch (error) {}
     queue = queue.filter(function (item) { return item.audio_id !== ch.id; });
     queue.push({ audio_id: ch.id, completed: completed });
-    localStorage.setItem('sx-queue:' + token, JSON.stringify(queue));
+    localStorage.setItem(progressQueueKey(), JSON.stringify(queue));
   }
 
   function flushQueue() {
     if (!progressEnabled) return;
-    var raw = localStorage.getItem('sx-queue:' + token);
+    var raw = localStorage.getItem(progressQueueKey());
     if (!raw) return;
     var queue;
     try { queue = JSON.parse(raw); } catch (error) { return; }
@@ -330,7 +331,7 @@ header .library-link:active { opacity: .7; }
       return fetch(api + '/progress', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(item) })
         .then(function (res) { if (!res.ok) throw new Error('bad'); });
     })).then(function () {
-      localStorage.removeItem('sx-queue:' + token);
+      localStorage.removeItem(progressQueueKey());
       $('offline').hidden = true;
     }).catch(function () {});
   }
@@ -406,8 +407,9 @@ header .library-link:active { opacity: .7; }
         $('dl-all').hidden = false;
         var cachedCount = chapters.filter(function (ch) { return cachedIds[cacheKey(ch.id)]; }).length;
         $('cache-btn').textContent = '☁ 离线缓存（' + cachedCount + ' / ' + chapters.length + ' 章）';
-        if (offlineMode || mode === 'C') $('dl-all-btn').hidden = true; // 书架单书模式暂无整本打包接口，先隐藏避免点击报错
+        if (offlineMode) $('dl-all-btn').hidden = true;
         else {
+          $('dl-all-btn').hidden = false;
           var total = data.chapters.length || data.whole_book.length;
           $('dl-all-btn').textContent = '⬇ 下载全部（' + total + ' 章 MP3 + 讲稿）';
         }
@@ -447,9 +449,9 @@ header .library-link:active { opacity: .7; }
         var row = document.createElement('div');
         row.className = 'chapter book-row';
         row.innerHTML = '<div class="num">📖</div>'
-          + '<div class="info"><div class="title"></div><div class="sub"><span>' + fmtBookDate(book.updated_at) + '</span><span>' + fmtBookDuration(book.total_seconds) + '</span><span>' + Number(book.chapters || 0) + ' 章</span></div></div>'
+          + '<div class="info"><div class="title"></div><div class="sub"><span>' + fmtBookDate(book.updated_at) + '</span><span>' + fmtBookDuration(book.total_seconds) + '</span><span>' + Number(book.chapter_count ?? book.chapters ?? 0) + ' 章</span></div></div>'
           + '<div class="go">→</div>';
-        row.querySelector('.title').textContent = book.title || '未命名';
+        row.querySelector('.title').textContent = book.name || book.title || '未命名';
         row.addEventListener('click', function () {
           location.href = api + '/book/' + encodeURIComponent(book.project_id);
         });
@@ -460,6 +462,14 @@ header .library-link:active { opacity: .7; }
     });
   }
   if (mode === 'B') { initLibraryPage(); return; }
+  if (mode === 'C') {
+    var libLink = $('library-link');
+    if (libLink) {
+      libLink.textContent = '← 返回手机书架';
+      libLink.href = '/m/library/' + encodeURIComponent(token);
+      libLink.hidden = false;
+    }
+  }
 
   /* ===== 模式 A：探一次书架入口；接口并行开发中，404 或字段缺失时静默隐藏。===== */
   if (mode === 'A') {
