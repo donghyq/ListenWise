@@ -236,9 +236,9 @@ CONTENT_SCENARIOS = {
 }
 
 TRANSFORM_MODES = {
-    "condense": {"name": "内容精炼", "description": "压缩原始材料，保留关键事实和信息层级，不补充外部信息。"},
-    "adapt": {"name": "正常转译", "description": "重组结构、解释术语、改善可听性，但不新增材料外事实。"},
-    "enrich": {"name": "内容丰富", "description": "在来源可追溯的前提下补充背景信息，适合培训、分享和公开表达。"},
+    "condense": {"name": "提炼", "description": "压缩原始材料，保留关键事实和信息层级，不补充外部信息。"},
+    "adapt": {"name": "原文转译", "description": "重组结构、解释术语、改善可听性，但不新增材料外事实。"},
+    "enrich": {"name": "扩充", "description": "在来源可追溯的前提下补充背景信息，适合培训、分享和公开表达。"},
 }
 
 PODCAST_CHAPTER_PROFILE = "law_podcast_v4"  # 速听/分章学习路径默认使用深度播客改写画像
@@ -1753,7 +1753,7 @@ def generate_chapter_podcast_markdown(title: str, blocks: list[dict], audience: 
 
 
 CHAPTER_TEMPLATE_NOTICE = (
-    "> ⚠️ 本章是**未接入 AI 时的规则摘要**：只取了要点清单，可能遗漏关键信息，也没有播客风改写。\n"
+    "> 本章是**未接入 AI 时的规则摘要**：只取了要点清单，可能遗漏关键信息，也没有播客风改写。\n"
     "> 在「设置」中连接文本模型后，点击本章的重新生成，即可获得完整改写讲稿。\n\n"
 )
 
@@ -2692,7 +2692,7 @@ def create_narrative_outline(request: NarrativeOutlineRequest, blocks: list[dict
 
 要求：
 1. 只使用材料中可支持的事实、观点、规则和案例；不要补充材料外法规、日期、数字、机构观点或个案结论。
-2. 如果加工方式为内容精炼，输出 1–3 段紧凑结构；其他方式输出 3–6 个实质章节。不要出现“核心提示”“对企业的影响”“建议动作”等通用模板标题。
+2. 如果加工方式为提炼，输出 1–3 段紧凑结构；其他方式输出 3–6 个实质章节。不要出现“核心提示”“对企业的影响”“建议动作”等通用模板标题。
 3. 每节给出具体写作目的和 2–5 个关键点；每节必须从下方“允许材料块 ID”中逐字复制至少一个 ID。禁止编造、缩写或沿用示例 ID。
 4. 章节之间有清晰递进：问题或背景、事实或规则展开、业务或实务含义、收束；Speak Note 需包含开场、核心观点、过渡和收束。
 5. 只输出一个 JSON 对象，不要输出 Markdown、解释或代码围栏。JSON 格式：

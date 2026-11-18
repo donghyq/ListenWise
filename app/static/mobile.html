@@ -74,7 +74,7 @@ header .library-link:active { opacity: .7; }
   <div class="meta" id="book-meta"></div>
   <a id="library-link" class="library-link" hidden></a>
   <div class="dl-all" id="dl-all" hidden>
-    <button id="cache-btn">☁ 离线缓存（电脑关机也能听）</button>
+    <button id="cache-btn">离线缓存（电脑关机也能听）</button>
     <button id="dl-all-btn">⬇ 下载全部（MP3 + 讲稿）</button>
     <div class="hint" id="dl-all-hint"></div>
   </div>
@@ -406,7 +406,7 @@ header .library-link:active { opacity: .7; }
         $('transcript-btn').hidden = !first.text;
         $('dl-all').hidden = false;
         var cachedCount = chapters.filter(function (ch) { return cachedIds[cacheKey(ch.id)]; }).length;
-        $('cache-btn').textContent = '☁ 离线缓存（' + cachedCount + ' / ' + chapters.length + ' 章）';
+        $('cache-btn').textContent = '离线缓存（' + cachedCount + ' / ' + chapters.length + ' 章）';
         if (offlineMode) $('dl-all-btn').hidden = true;
         else {
           $('dl-all-btn').hidden = false;
@@ -445,10 +445,10 @@ header .library-link:active { opacity: .7; }
       }
       $('book-meta').textContent = '共 ' + books.length + ' 本 · 点开继续听';
       $('list').innerHTML = '';
-      books.forEach(function (book) {
+      books.forEach(function (book, index) {
         var row = document.createElement('div');
         row.className = 'chapter book-row';
-        row.innerHTML = '<div class="num">📖</div>'
+        row.innerHTML = '<div class="num">' + String(index + 1).padStart(2, '0') + '</div>'
           + '<div class="info"><div class="title"></div><div class="sub"><span>' + fmtBookDate(book.updated_at) + '</span><span>' + fmtBookDuration(book.total_seconds) + '</span><span>' + Number(book.chapter_count ?? book.chapters ?? 0) + ' 章</span></div></div>'
           + '<div class="go">→</div>';
         row.querySelector('.title').textContent = book.name || book.title || '未命名';
@@ -521,7 +521,7 @@ header .library-link:active { opacity: .7; }
       if (!todo.length) {
         btn.disabled = false;
         btn.classList.add('cached');
-        btn.textContent = '☁ 离线缓存（' + (chapters.length - fail) + ' / ' + chapters.length + ' 章）';
+        btn.textContent = '离线缓存（' + (chapters.length - fail) + ' / ' + chapters.length + ' 章）';
         hint.textContent = fail
           ? '有 ' + fail + ' 章缓存失败，可稍后再点一次补齐。'
           : '✓ 已全部缓存。注意：重新打开页面时仍需声息在线加载页面本身，之后播放、文稿、标记都走手机缓存。';
@@ -531,7 +531,7 @@ header .library-link:active { opacity: .7; }
       cacheAudio(ch).then(function (ok) {
         if (!ok) fail++;
         done++;
-        btn.textContent = '☁ 缓存中… ' + done + ' / ' + total;
+        btn.textContent = '缓存中… ' + done + ' / ' + total;
         next();
       });
     }

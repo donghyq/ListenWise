@@ -6,7 +6,7 @@ const SCENARIOS = {
   speaking_note: { name: '客户培训 / Speak Note', description: '准备培训、发言和对外交流讲稿', transform: 'enrich', verification: 'external_verify', duration: 20, audio: false, audience: '客户法务与业务团队', narrativeLabel: 'Speak Note' },
   legal_podcast: { name: '法律科普播客', description: '实务热点与经验积累的对外表达', transform: 'enrich', verification: 'external_verify', duration: 20, audio: true, audience: '行业听众与潜在客户', narrativeLabel: '播客讲稿' },
 };
-const TRANSFORM_NAMES = { condense: '内容精炼', adapt: '正常转译', enrich: '内容丰富' };
+const TRANSFORM_NAMES = { condense: '提炼', adapt: '原文转译', enrich: '扩充' };
 const lengthOfWords = words => words <= 2200 ? 'short' : words <= 5000 ? 'standard' : 'deep';
 // 比例 → 绝对字数：按原文长度换算并夹在后端允许范围（400–8000）内，取整到百位。
 function wordsFromRatio(ratio) {
@@ -201,7 +201,7 @@ function renderSeriesOverview() {
       const dur = item.total_seconds ? ' · ' + formatListenLength(item.total_seconds) : '';
       const prog = item.total ? ' · 已学 ' + item.done + '/' + item.total + ' 节' : '';
       return '<button type="button" class="series-shelf-card' + (active ? ' active' : '') + '" data-series-bar="' + escapeHtml(item.name) + '">'
-        + '<b>📚 ' + escapeHtml(item.name) + '</b><small>' + item.count + ' 期' + dur + prog + '</small></button>';
+        + '<b>系列 · ' + escapeHtml(item.name) + '</b><small>' + item.count + ' 期' + dur + prog + '</small></button>';
     }).join('') + '</div></section>';
   $('#clear-series-bar', box)?.addEventListener('click', () => { appState.seriesFilter = ''; renderProjectList(); });
   $$('[data-series-bar]', box).forEach(btn => btn.addEventListener('click', () => {
@@ -372,7 +372,7 @@ function renderProjectList() {
     const tag = (project.collection || '').trim();
     const tagBtn = '<button type="button" class="card-tag-btn' + (tag ? '' : ' untagged') + '" data-tag-project="' + project.id + '">' + (tag ? escapeHtml(tag) : '＋ 收藏夹') + '</button>';
     const series = (project.series || '').trim();
-    const seriesBtn = series ? '<button type="button" class="card-series-btn' + (appState.seriesFilter === series ? ' active' : '') + '" data-series-filter="' + escapeHtml(series) + '" title="筛选这个系列">📚 ' + escapeHtml(series) + '</button>' : '';
+    const seriesBtn = series ? '<button type="button" class="card-series-btn' + (appState.seriesFilter === series ? ' active' : '') + '" data-series-filter="' + escapeHtml(series) + '" title="筛选这个系列">系列 · ' + escapeHtml(series) + '</button>' : '';
     const status = projectCardStatus(project, progress);
     const direct = !!project.production_stage?.has_direct_audio_script;
     const durationMeta = projectDurationMeta(project, direct);
@@ -829,8 +829,8 @@ function renderProjectDetail() {
     preferenceBits.push('时长不设上限');
   }
   const preferenceText = preferenceBits.map(text => '<span>' + escapeHtml(text) + '</span>').join('');
-  const mobileShareBtn = state.hasAudio ? '<button class="button button-primary button-small" id="open-mobile-pass">📱 带到手机听</button>' : '';
-  detail.innerHTML = '<div class="detail-top"><div class="detail-header"><div><p class="eyebrow">' + escapeHtml(directListening ? '原文朗读' : scenario.name) + '</p><h2>' + escapeHtml(data.project.name) + '</h2><p>' + escapeHtml(directListening ? '保留文章内容，直接生成并收听音频。' : data.project.client_name || data.project.description || scenario.description) + '</p><div class="task-preferences"><button type="button" class="tag-edit-btn" id="edit-collection" title="归类到某个收藏夹">🏷 ' + ((data.project.collection || '').trim() ? escapeHtml(data.project.collection.trim()) : '收藏夹未设置 · 点击归类') + '</button><button type="button" class="tag-edit-btn" id="edit-series" title="归入某个系列">📚 ' + ((data.project.series || '').trim() ? escapeHtml(data.project.series.trim()) : '系列未设置 · 点击归类') + '</button>' + preferenceText + '</div></div><div class="detail-actions">' + '<button class="button button-outline button-small" id="back-to-projects">← 全部项目</button>' + mobileShareBtn + '<button class="button button-outline button-small" id="export-project">导出到本机…</button><details class="more-menu"><summary class="button button-outline button-small">更多</summary><div class="more-menu-list"><button class="button button-quiet button-small" id="edit-collection-menu">归类到收藏夹</button><button class="button button-quiet button-small" id="edit-series-menu">归类到系列</button><button class="button button-quiet button-small" id="rename-project">重命名项目</button><button class="button button-quiet button-small" id="reload-project">重新载入项目</button><button class="button button-danger button-small" id="delete-project">删除项目</button></div></details></div></div>' + '<div class="tabbar">' + tabHtml + '</div></div>' + renderWorkflowHint(data, state) + '<div id="detail-panel" class="detail-panel"></div>';
+  const mobileShareBtn = state.hasAudio ? '<button class="button button-primary button-small" id="open-mobile-pass">带到手机听</button>' : '';
+  detail.innerHTML = '<div class="detail-top"><div class="detail-header"><div><p class="eyebrow">' + escapeHtml(directListening ? '原文朗读' : scenario.name) + '</p><h2>' + escapeHtml(data.project.name) + '</h2><p>' + escapeHtml(directListening ? '保留文章内容，直接生成并收听音频。' : data.project.client_name || data.project.description || scenario.description) + '</p><div class="task-preferences"><button type="button" class="tag-edit-btn" id="edit-collection" title="归类到某个收藏夹">' + ((data.project.collection || '').trim() ? '收藏夹 · ' + escapeHtml(data.project.collection.trim()) : '收藏夹未设置 · 点击归类') + '</button><button type="button" class="tag-edit-btn" id="edit-series" title="归入某个系列">' + ((data.project.series || '').trim() ? '系列 · ' + escapeHtml(data.project.series.trim()) : '系列未设置 · 点击归类') + '</button>' + preferenceText + '</div></div><div class="detail-actions">' + '<button class="button button-outline button-small" id="back-to-projects">← 全部项目</button>' + mobileShareBtn + '<button class="button button-outline button-small" id="export-project">导出到本机…</button><details class="more-menu"><summary class="button button-outline button-small">更多</summary><div class="more-menu-list"><button class="button button-quiet button-small" id="edit-collection-menu">归类到收藏夹</button><button class="button button-quiet button-small" id="edit-series-menu">归类到系列</button><button class="button button-quiet button-small" id="rename-project">重命名项目</button><button class="button button-quiet button-small" id="reload-project">重新载入项目</button><button class="button button-danger button-small" id="delete-project">删除项目</button></div></details></div></div>' + '<div class="tabbar">' + tabHtml + '</div></div>' + renderWorkflowHint(data, state) + '<div id="detail-panel" class="detail-panel"></div>';
   $('#edit-collection')?.addEventListener('click', () => openCollectionDialog(data.project.id));
   $('#edit-collection-menu')?.addEventListener('click', () => openCollectionDialog(data.project.id));
   $('#edit-series')?.addEventListener('click', () => openSeriesDialog(data.project.id));
@@ -1353,7 +1353,7 @@ async function confirmPlan() {
 
 function renderReviewPanel() {
   const panel = $('#detail-panel'); const plan = appState.activePlan; const contents = appState.selectedProject.contents; const canGenerate = plan?.status === 'confirmed';
-  const buttons = canGenerate ? '<div class="detail-actions" id="generate-buttons">' + plan.chapters.filter(chapter => chapter.enabled !== false).map(chapter => '<button class="button button-primary button-small" data-generate-chapter="' + chapter.id + '">✨ 提炼：' + escapeHtml(chapter.title.replace(/^(决策速览：|法律简报：|法声解读：)/,'')) + '</button>').join('') + '</div>' : '<p class="form-note">请先在“章节方案”中确认范围，才能生成内容。</p>';
+  const buttons = canGenerate ? '<div class="detail-actions" id="generate-buttons">' + plan.chapters.filter(chapter => chapter.enabled !== false).map(chapter => '<button class="button button-primary button-small" data-generate-chapter="' + chapter.id + '">提炼：' + escapeHtml(chapter.title.replace(/^(决策速览：|法律简报：|法声解读：)/,'')) + '</button>').join('') + '</div>' : '<p class="form-note">请先在“章节方案”中确认范围，才能生成内容。</p>';
 
   const chapterNav = contents.length > 1 ? '<div class="review-nav-bar"><span class="nav-label">目录速览：</span><div class="nav-pills">' +
     contents.map((c, i) => '<a href="#content-card-' + c.id + '" class="nav-pill ' + c.status + '"><span>第' + (i + 1) + '篇</span><b>' + escapeHtml(c.title.replace(/^(决策速览：|法律简报：|法声解读：)/,'')) + '</b><small>' + statusText(c.status) + '</small></a>').join('') + '</div></div>' : '';
@@ -1400,15 +1400,15 @@ function renderContentCard(content, index = 0, total = 1) {
   const claims = content.claims || [];
   const isEditing = appState.editingContentId === content.id;
   const revisionBanner = (content.status === 'needs_revision' && content.review_note) ?
-    '<div class="revision-alert"><b>⚠️ 律师修改意见：</b><span>' + escapeHtml(content.review_note) + '</span></div>' : '';
+    '<div class="revision-alert"><b>律师修改意见：</b><span>' + escapeHtml(content.review_note) + '</span></div>' : '';
 
   const mainArea = isEditing ?
-    '<div class="memo-edit-container"><div class="memo-edit-header"><b>✏️ 正在编辑备忘录正文（支持 Markdown）</b><small>修改后点击下方“保存文书修改”生效</small></div><textarea class="memo-editor" id="memo-editor-' + content.id + '">' + escapeHtml(content.markdown) + '</textarea></div>' :
+    '<div class="memo-edit-container"><div class="memo-edit-header"><b>正在编辑备忘录正文（支持 Markdown）</b><small>修改后点击下方“保存文书修改”生效</small></div><textarea class="memo-editor" id="memo-editor-' + content.id + '">' + escapeHtml(content.markdown) + '</textarea></div>' :
     '<article class="memo-document">' + revisionBanner + renderMemo(content) + '</article>';
 
   const actionButtons = isEditing ?
     '<button class="button button-outline button-small" data-cancel-edit="' + content.id + '">取消编辑</button><button class="button button-primary button-small" data-save-edit="' + content.id + '">保存文书修改</button>' :
-    '<button class="button button-outline button-small" data-edit-content="' + content.id + '">✏️ 修改正文</button><button class="button button-outline button-small" data-review-dialog="' + content.id + '">退回修改</button><button class="button button-primary button-small" data-review-confirm="' + content.id + '">确认内容</button>';
+    '<button class="button button-outline button-small" data-edit-content="' + content.id + '">修改正文</button><button class="button button-outline button-small" data-review-dialog="' + content.id + '">退回修改</button><button class="button button-primary button-small" data-review-confirm="' + content.id + '">确认内容</button>';
 
   return '<article class="content-card" id="content-card-' + content.id + '">' +
     '<div class="content-card-header">' +
@@ -1417,7 +1417,7 @@ function renderContentCard(content, index = 0, total = 1) {
         '<h3>' + escapeHtml(content.title) + '</h3>' +
         '<small>生成于 ' + formatDate(content.created_at) + ' · <span class="status ' + content.status + '">' + statusText(content.status) + '</span></small>' +
       '</div>' +
-      '<span class="tag">✨ 事实提取 ' + claims.length + ' 项 · 证据已锚定</span>' +
+      '<span class="tag">事实提取 ' + claims.length + ' 项 · 证据已锚定</span>' +
     '</div>' +
     '<div class="content-body">' +
       mainArea +
@@ -1483,7 +1483,7 @@ function openRevisionDialog(contentId) {
   document.body.appendChild(modal);
 }
 
-async function generateChapter(chapterId, button) { try { const chapter = appState.activePlan.chapters.find(item => item.id === chapterId); if (!chapter) throw new Error('未找到章节。'); setBusy(button, true, '✨ 提炼中…'); await request('/api/plans/' + appState.activePlan.id + '/contents', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chapter_id: chapter.id, title: chapter.title, source_block_ids: chapter.source_block_ids, audience: appState.activePlan.audience, output_type: appState.activePlan.output_type, style_name: appState.activePlan.style_name }) }); appState.selectedProject = await request('/api/projects/' + appState.selectedProject.project.id); renderProjectDetail(); showMessage('已生成可审阅初稿，并提取了待核验任务。'); } catch (error) { showMessage(error.message, true); } finally { setBusy(button, false); } }
+async function generateChapter(chapterId, button) { try { const chapter = appState.activePlan.chapters.find(item => item.id === chapterId); if (!chapter) throw new Error('未找到章节。'); setBusy(button, true, '提炼中…'); await request('/api/plans/' + appState.activePlan.id + '/contents', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chapter_id: chapter.id, title: chapter.title, source_block_ids: chapter.source_block_ids, audience: appState.activePlan.audience, output_type: appState.activePlan.output_type, style_name: appState.activePlan.style_name }) }); appState.selectedProject = await request('/api/projects/' + appState.selectedProject.project.id); renderProjectDetail(); showMessage('已生成可审阅初稿，并提取了待核验任务。'); } catch (error) { showMessage(error.message, true); } finally { setBusy(button, false); } }
 function highlightClaim(contentId, claimId) {
   const card = $('[data-claim-card="' + contentId + ':' + claimId + '"]');
   if (!card) return;
@@ -1595,7 +1595,7 @@ function renderStructurePanel() {
   panel.innerHTML = renderOutlineFeedback(feedbackOutline) + planPanel + '<section class="panel-card"><p class="eyebrow">第二步 · 自动生成播客风讲稿</p><h3>章节确认后自动成稿</h3>' +
     '<p class="form-note">' + (currentPlan?.status === 'confirmed' ? (outlines.length ? '章节已确认。请检查大纲并生成讲稿；完成后可逐章收听和修改。' : '章节已确认。连接文本模型并允许发送素材后，才能生成播客风讲稿。') : '确认上方章节后，连接文本模型并允许发送素材，即可生成播客风讲稿。') + '</p>' +
     '<div class="narrative-quick"><div class="field"><label>改写深度</label><div class="depth-options" id="narrative-depth">' +
-      ['adapt', 'condense', 'enrich'].map(mode => '<label class="check-label depth-option"><input type="radio" name="narrative-transform" value="' + mode + '" ' + ((appState.outlineTransform || project.transform_mode) === mode ? 'checked' : '') + '/><span><b>' + TRANSFORM_NAMES[mode] + '</b><small>' + ({ adapt: '忠实转译：重组讲清，尽量保留关键信息', condense: '提炼：压缩成要点速听', enrich: '扩充：补背景，讲得更透' }[mode]) + '</small></span></label>').join('') +
+      ['adapt', 'condense', 'enrich'].map(mode => '<label class="check-label depth-option"><input type="radio" name="narrative-transform" value="' + mode + '" ' + ((appState.outlineTransform || project.transform_mode) === mode ? 'checked' : '') + '/><span><b>' + TRANSFORM_NAMES[mode] + '</b><small>' + ({ adapt: '原文转译：重组讲清，尽量保留关键信息', condense: '提炼：压缩成要点速听', enrich: '扩充：补背景，讲得更透' }[mode]) + '</small></span></label>').join('') +
     '</div></div>' +
     '<div class="field"><label>目标篇幅（相对原文）</label><select id="narrative-words-ratio">' +
       '<option value="auto" selected>自动 · 跟随改写深度</option>' +
@@ -1721,7 +1721,7 @@ function renderNarrativeOutputPanel() {
 
   const hasOutlineContent = contents.some(content => content.outline_id === confirmedOutline.id);
   const isPreviewDraftOnly = hasOutlineContent && contents.some(content => content.outline_id === confirmedOutline.id && String(content.review_note || '').includes('第 1 章试听'));
-  panel.innerHTML = (hasOutlineContent && !isPreviewDraftOnly ? '' : '<section class="panel-card"><h3>' + (isPreviewDraftOnly ? '第 1 章试听已就绪 · 继续生成剩余章节' : contents.length ? '按新大纲生成新版本' : '生成' + scenario.narrativeLabel) + '</h3><p>' + (isPreviewDraftOnly ? '你已生成第 1 章试听草稿。如果风格合意，点击下方按钮即可直接从第 2 章续写全篇，第 1 章不会重复生成。' : '大纲已确认。可以先花 20 秒生成第 1 章试听验证风格，也可以直接逐节生成全篇。') + '</p><p class="form-note" id="generation-status">点击下方按钮开始写作；写作过程中这里会显示当前进度。</p><div class="plan-actions">' + (!isPreviewDraftOnly && (confirmedOutline.outline?.sections || []).length > 1 ? '<button class="button button-outline" data-preview-first-outline="' + confirmedOutline.id + '">⚡ 先生成第 1 章试听</button>' : '') + '<button class="button button-primary" data-generate-from-outline="' + confirmedOutline.id + '">' + (isPreviewDraftOnly ? '继续生成剩余章节' : '逐节生成' + escapeHtml(scenario.narrativeLabel)) + '</button></div></section>') +
+  panel.innerHTML = (hasOutlineContent && !isPreviewDraftOnly ? '' : '<section class="panel-card"><h3>' + (isPreviewDraftOnly ? '第 1 章试听已就绪 · 继续生成剩余章节' : contents.length ? '按新大纲生成新版本' : '生成' + scenario.narrativeLabel) + '</h3><p>' + (isPreviewDraftOnly ? '你已生成第 1 章试听草稿。如果风格合意，点击下方按钮即可直接从第 2 章续写全篇，第 1 章不会重复生成。' : '大纲已确认。可以先花 20 秒生成第 1 章试听验证风格，也可以直接逐节生成全篇。') + '</p><p class="form-note" id="generation-status">点击下方按钮开始写作；写作过程中这里会显示当前进度。</p><div class="plan-actions">' + (!isPreviewDraftOnly && (confirmedOutline.outline?.sections || []).length > 1 ? '<button class="button button-outline" data-preview-first-outline="' + confirmedOutline.id + '">先生成第 1 章试听</button>' : '') + '<button class="button button-primary" data-generate-from-outline="' + confirmedOutline.id + '">' + (isPreviewDraftOnly ? '继续生成剩余章节' : '逐节生成' + escapeHtml(scenario.narrativeLabel)) + '</button></div></section>') +
     '<section class="panel-card">' + historyBar + '<div class="narrative-content-list">' + (activeContent ? renderNarrativeContentCard(activeContent) : '<p class="form-note">尚未生成讲稿。</p>') + '</div></section>' +
     '<details class="panel-card optional-path"><summary>也可以交给外部 AI 助手写稿，再粘贴回本地审阅</summary><div class="optional-path-body"><p>无需配置模型密钥。声息只复制当前材料块与写作要求；你在任意 AI 助手（如 ChatGPT、千问）生成 Markdown 后，粘贴回本地即可。</p><div class="handoff-actions"><button class="button button-outline" id="copy-chatgpt-prompt">复制给 AI 助手</button><button class="button button-primary" id="open-chatgpt-import">粘贴 AI 成稿</button></div></div></details>';
 
@@ -1879,7 +1879,7 @@ function renderNarrativeOutline(record) {
   const isConfirmed = record.status === 'confirmed';
   const statusBadge = isConfirmed ? '<span class="tag confirmed">● 大纲已确认</span>' : '<span class="tag">待确认大纲</span>';
   const actionButtons = isConfirmed ?
-    '<button class="button button-outline button-small" id="reedit-narrative-outline">重新调整大纲</button>' + (sections.length > 1 ? '<button class="button button-outline button-small" data-preview-first-outline="' + record.id + '">⚡ 先生成第 1 章试听</button>' : '') + '<button class="button button-primary button-small" data-generate-narrative="' + record.id + '">生成全篇讲稿</button>' :
+    '<button class="button button-outline button-small" id="reedit-narrative-outline">重新调整大纲</button>' + (sections.length > 1 ? '<button class="button button-outline button-small" data-preview-first-outline="' + record.id + '">先生成第 1 章试听</button>' : '') + '<button class="button button-primary button-small" data-generate-narrative="' + record.id + '">生成全篇讲稿</button>' :
     '<button class="button button-outline button-small" id="add-narrative-section" ' + (sections.length >= 8 ? 'disabled' : '') + '>新增章节</button><button class="button button-primary button-small" id="confirm-narrative-outline">确认大纲</button>';
   const disabled = isConfirmed ? 'disabled' : '';
   area.innerHTML = '<div class="outline-header"><div><p class="eyebrow">' + (isConfirmed ? '大纲已就绪' : '待确认大纲 · 可调整顺序、内容与补充来源') + '</p><label>标题<input id="outline-title" value="' + escapeHtml(outline.title || record.title) + '" ' + disabled + '/></label><label>开场思路<input id="outline-opening" value="' + escapeHtml(outline.opening_angle || '') + '" ' + disabled + '/></label><label>收束思路<input id="outline-closing" value="' + escapeHtml(outline.closing_angle || '') + '" ' + disabled + '/></label></div>' + statusBadge + '</div><div class="narrative-outline-list">' + sections.map((section, index) => {
@@ -2121,7 +2121,7 @@ async function generateNarrative(outlineId, button) {
     });
     appState.selectedProject = await request('/api/projects/' + appState.selectedProject.project.id);
     renderProjectDetail();
-    showMessage('知识转译成稿已生成！可直接阅读排版或导出 DOCX。');
+    showMessage('讲稿已生成！可直接阅读排版或导出 DOCX。');
     return true;
   } catch (error) {
     stopPoll();
@@ -3690,7 +3690,7 @@ function syncDesktopSleepUi() {
   if (!btn) return;
   const remain = desktopSleepEndsAt - Date.now();
   if (desktopSleepEndsAt > 0 && remain > 0) {
-    btn.textContent = '🌙 ' + formatSleepCountdown(remain);
+    btn.textContent = '定时 ' + formatSleepCountdown(remain);
     btn.classList.add('active');
   } else {
     btn.textContent = '定时';
@@ -3890,8 +3890,8 @@ async function openMobilePassModal() {
   overlay.innerHTML = '<div class="source-modal-card mobile-pass-card">'
     + '<div class="source-modal-top"><div><p class="eyebrow">声息 · 随身书签</p><h3>把声音带到路上听</h3></div><button type="button" class="icon-button" data-pass-close aria-label="关闭">×</button></div>'
     + '<div class="mobile-pass-tabs" role="tablist">'
-    + '<button type="button" class="mobile-pass-tab active" data-pass-mode="book">📖 仅带走本书</button>'
-    + '<button type="button" class="mobile-pass-tab" data-pass-mode="library">📚 带走整个书架</button>'
+    + '<button type="button" class="mobile-pass-tab active" data-pass-mode="book">仅带走本书</button>'
+    + '<button type="button" class="mobile-pass-tab" data-pass-mode="library">带走整个书架</button>'
     + '</div>'
     + '<div id="mobile-pass-body" class="mobile-pass-body"><p class="form-note">正在生成随身收听二维码…</p></div>'
     + '</div>';

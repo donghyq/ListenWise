@@ -90,7 +90,7 @@
         <form id="quick-link-form">
           <div class="quick-link-entry"><input id="quick-link-input" type="url" required aria-label="公众号或网页链接" placeholder="粘贴公众号或网页链接" /><button type="submit" class="button button-primary" id="quick-link-submit">预览文章</button></div>
           <p class="quick-link-status" id="quick-link-status" role="status" aria-live="polite"></p>
-          <div class="quick-link-preview hidden" id="quick-link-preview"><div class="quick-preview-head"><span class="quick-preview-label">抓取预览</span><button type="button" class="button button-quiet button-small" id="quick-preview-reset">重新输入</button></div><h4 id="quick-preview-title"></h4><p id="quick-preview-excerpt"></p><small id="quick-preview-length"></small><details class="quick-preview-details" id="quick-preview-details"><summary><span class="quick-preview-open">展开全文检查</span><span class="quick-preview-close">收起全文</span></summary><div class="quick-preview-full" tabindex="0" aria-label="抓取到的完整正文"><pre id="quick-preview-full"></pre><div class="quick-preview-ending"><b>正文结尾</b><p id="quick-preview-ending"></p></div></div></details><fieldset><p class="quick-options-hint">确认正文完整后，选择收听方式</p><label><input type="radio" name="quick_scenario" value="daily_brief" checked /> 播客风改写 · AI 分章成稿，逐章收听<small>先按深度改写，再合成音频</small></label><label><input type="radio" name="quick_scenario" value="direct_audio" /> 原文朗读 · 不改写，直接生成音频<small>完整保留原文写法</small></label><div class="quick-depth" id="quick-depth"><span class="quick-depth-title">改写深度</span><label><input type="radio" name="quick_transform" value="adapt" checked /> 忠实转译<small>重组讲清，尽量保留关键信息</small></label><label><input type="radio" name="quick_transform" value="condense" /> 提炼<small>压缩成要点速听</small></label><label><input type="radio" name="quick_transform" value="enrich" /> 扩充<small>补背景，讲得更透</small></label></div></fieldset><button type="button" class="button button-primary" id="quick-link-create">确认正文并继续 →</button></div>
+          <div class="quick-link-preview hidden" id="quick-link-preview"><div class="quick-preview-head"><span class="quick-preview-label">抓取预览</span><button type="button" class="button button-quiet button-small" id="quick-preview-reset">重新输入</button></div><h4 id="quick-preview-title"></h4><p id="quick-preview-excerpt"></p><small id="quick-preview-length"></small><details class="quick-preview-details" id="quick-preview-details"><summary><span class="quick-preview-open">展开全文检查</span><span class="quick-preview-close">收起全文</span></summary><div class="quick-preview-full" tabindex="0" aria-label="抓取到的完整正文"><pre id="quick-preview-full"></pre><div class="quick-preview-ending"><b>正文结尾</b><p id="quick-preview-ending"></p></div></div></details><fieldset><p class="quick-options-hint">确认正文完整后，选择收听方式</p><label><input type="radio" name="quick_scenario" value="daily_brief" checked /> 播客风改写 · AI 分章成稿，逐章收听<small>先按深度改写，再合成音频</small></label><label><input type="radio" name="quick_scenario" value="direct_audio" /> 原文朗读 · 不改写，直接生成音频<small>完整保留原文写法</small></label><div class="quick-depth" id="quick-depth"><span class="quick-depth-title">改写深度</span><label><input type="radio" name="quick_transform" value="adapt" checked /> 原文转译<small>重组讲清，尽量保留关键信息</small></label><label><input type="radio" name="quick_transform" value="condense" /> 提炼<small>压缩成要点速听</small></label><label><input type="radio" name="quick_transform" value="enrich" /> 扩充<small>补背景，讲得更透</small></label></div></fieldset><button type="button" class="button button-primary" id="quick-link-create">确认正文并继续 →</button></div>
         </form>
         <label class="quick-upload">或上传文件 <span>PDF · DOCX · TXT · Markdown</span><input id="quick-upload-input" type="file" accept=".docx,.txt,.md,.pdf" /></label>
       </section>
@@ -145,7 +145,7 @@
     </section>
   </main>
 
-  <footer class="footer shell"><span>声息 Shengxi · 有时只是戴上耳机，然后出发 🍂</span><span id="app-version">材料整理 · 原文朗读 · 分章收听</span></footer>
+  <footer class="footer shell"><span>声息 Shengxi · 有时只是戴上耳机，然后出发</span><span id="app-version">材料整理 · 原文朗读 · 分章收听</span></footer>
 
   <dialog id="project-dialog" class="dialog"><form id="project-form">
     <div class="dialog-header"><h2>新建整理任务</h2><button type="button" aria-label="关闭" class="icon-button" data-close-dialog="project-dialog">×</button></div>
@@ -161,7 +161,7 @@
       <label>内容处理方式</label>
       <div class="mode-options">
         <label><input type="radio" name="transform_mode" value="condense" />提炼<small>压缩成要点，快速掌握核心</small></label>
-        <label><input type="radio" name="transform_mode" value="adapt" checked />转译<small>重组并解释，适合系统学习</small></label>
+        <label><input type="radio" name="transform_mode" value="adapt" checked />原文转译<small>重组并解释，适合系统学习</small></label>
         <label><input type="radio" name="transform_mode" value="enrich" />扩充<small>补充背景知识，讲得更透</small></label>
       </div>
       <label class="check-label"><input type="checkbox" name="audio_enabled" checked /> 生成音频制作入口（通勤、运动时逐章收听）</label>

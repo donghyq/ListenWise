@@ -191,7 +191,7 @@ function renderChapterWorkbench(content, options = {}) {
   }).join('') + '</div><button class="button button-quiet button-small" data-outline-feedback="' + content.outline_id + '">调整章节划分与顺序 →</button></div></aside>' : '';
   const player = studioControlled
     ? (audio?.audio_available
-      ? '<div class="chapter-player chapter-player-studio"><span class="chapter-studio-sync">💡 由上方播客播放器连续播放 · <b>点击下方正文任意句子可直接从该句开始听</b></span>' + button('export-audio', '保存本章 MP3') + '</div>'
+      ? '<div class="chapter-player chapter-player-studio"><span class="chapter-studio-sync">由上方播客播放器连续播放 · <b>点击下方正文任意句子可直接从该句开始听</b></span>' + button('export-audio', '保存本章 MP3') + '</div>'
       : '<p class="chapter-audio-hint">' + (audio?.status === 'source_changed' ? '本章正文已修改。确认讲稿后更新音频，手机端也会使用更新后的音频。' : '本章还没有可播放音频。' + (content.status !== 'confirmed' ? '先确认讲稿，再生成正式音频。' : '')) + '</p>')
     : (audio?.audio_available
       ? '<div class="chapter-player"><audio controls preload="metadata" data-chapter-player="' + audio.id + '" src="/api/audio-outputs/' + audio.id + '/stream?v=' + encodeURIComponent(audio.updated_at) + '"></audio><label>倍速<select data-chapter-rate><option value="1">1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option></select></label>' + button('export-audio', '保存 MP3') + '</div>'
@@ -257,9 +257,9 @@ function bindChapterWorkbench(root = $('#detail-panel')) {
       pop.className = 'fc-quote-popover';
       pop.style.top = Math.max(12, rect.top + window.scrollY - 44) + 'px';
       pop.style.left = Math.min(window.innerWidth - 280, Math.max(12, rect.left + window.scrollX)) + 'px';
-      pop.innerHTML = '<button type="button" data-quote-act="concise">✨ 精简这段</button>'
-        + '<button type="button" data-quote-act="explain">💡 解释术语</button>'
-        + '<button type="button" data-quote-act="feedback">✎ 引用并提意见</button>';
+      pop.innerHTML = '<button type="button" data-quote-act="concise">精简这段</button>'
+        + '<button type="button" data-quote-act="explain">解释术语</button>'
+        + '<button type="button" data-quote-act="feedback">引用并提意见</button>';
       document.body.appendChild(pop);
       $$('[data-quote-act]', pop).forEach(btn => btn.addEventListener('click', event => {
         event.stopPropagation();
