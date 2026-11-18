@@ -11,7 +11,7 @@ $Version = (python -c "from app.version import __version__; print(__version__)")
 if (-not $Version) { throw "Cannot read app.version.__version__" }
 
 Write-Host "Installing dependencies..."
-python -m pip install -r requirements.txt pyinstaller
+python -m pip install -r requirements.txt pyinstaller "mcp[cli]"
 
 $AddDataArgs = @("--add-data", "app/static;app/static")
 $FfmpegBin = Get-ChildItem -Path (Join-Path $RootDir "tools\ffmpeg") -Filter "ffmpeg.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
