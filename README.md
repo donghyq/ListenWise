@@ -49,17 +49,18 @@
 | 平台 | 使用方式 | 语音与导出支持 |
 | --- | --- | --- |
 | **macOS（Apple Silicon）** | 下载 `.dmg` 桌面安装包，或从源码启动 | 内置 macOS 本地离线语音（`say` / 婷婷增强版）、Edge TTS、云端 TTS；导出文件自动在访达（Finder）定位 |
-| **Windows（10 / 11）** | 从源码启动，或使用 `scripts/build_windows_app.ps1` 打包桌面版 | 内置 Windows SAPI 本地离线语音、Edge TTS、云端 TTS；导出文件自动在资源管理器定位 |
+| **Windows（10 / 11）** | 下载 `win64.zip` 便携桌面包（解压即用），或从源码启动 | 内置便携 FFmpeg、Windows SAPI 本地离线语音、Edge TTS、云端 TTS；导出文件自动在资源管理器定位 |
 | **手机端（iOS / Android）** | 电脑端点击「带到手机听」生成二维码，手机连同一 Wi-Fi 扫码即听 | 支持按章连播、文稿同步滚动、睡眠定时、**浏览器离线缓存（电脑关机也能听）**、整书 ZIP 打包下载与学习进度回传 |
 
-### 方式一：下载桌面安装包（macOS）
+### 方式一：下载桌面安装包（macOS / Windows）
 
-前往 [Releases](https://github.com/hey-elaine/lawflow/releases/tag/v0.1.2) 下载最新 `v0.1.2` 安装包（`Shengxi-0.1.2-macOS-arm64.dmg`）。
+前往 [Releases](https://github.com/hey-elaine/lawflow/releases/tag/v0.1.2) 下载最新 `v0.1.2` 安装包：
+- **macOS（Apple Silicon）**：下载 `Shengxi-0.1.2-macOS-arm64.dmg`
+- **Windows（64 位）**：下载 `Shengxi-0.1.2-win64.zip`（已内置便携版 FFmpeg，解压后双击 `Shengxi.exe` 即可运行）
 
 安装与首次打开说明：
-1. 打开 `.dmg`，将「声息.app」拖入「应用程序（Applications）」。
-2. 因安装包采用开发阶段临时签名（尚未进行 Apple Developer ID 公证），首次打开若提示无法验证开发者，请在访达「应用程序」中**按住 Control 键点击「声息」→ 选择「打开」**（或在「系统设置 → 隐私与安全性」中点击「仍要打开」）。
-3. 如需合成完整 MP3 与 M4B 有声书，请确保本机已安装 FFmpeg（macOS 可执行 `brew install ffmpeg`）。
+1. **macOS**：打开 `.dmg`，将「声息.app」拖入「应用程序（Applications）」。因安装包采用开发阶段临时签名（尚未进行 Apple Developer ID 公证），首次打开若提示无法验证开发者，请在访达「应用程序」中**按住 Control 键点击「声息」→ 选择「打开」**（或在「系统设置 → 隐私与安全性」中点击「仍要打开」）。如需合成完整 MP3 与 M4B 有声书，请确保本机已安装 FFmpeg（`brew install ffmpeg`）。
+2. **Windows**：解压 `Shengxi-0.1.2-win64.zip` 到任意目录，双击 `Shengxi.exe` 启动（包内已附带 FFmpeg，无需额外配置环境变量）。
 
 ### 方式二：从源码运行
 

@@ -13,13 +13,21 @@ if (-not $Version) { throw "Cannot read app.version.__version__" }
 Write-Host "Installing dependencies..."
 python -m pip install -r requirements.txt pyinstaller
 
+$AddDataArgs = @("--add-data", "app/static;app/static")
+$FfmpegBin = Get-ChildItem -Path (Join-Path $RootDir "tools\ffmpeg") -Filter "ffmpeg.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($FfmpegBin) {
+  $FfmpegDir = $FfmpegBin.Directory.FullName
+  Write-Host "Bundling FFmpeg from: $FfmpegDir"
+  $AddDataArgs += @("--add-data", "$FfmpegDir;tools/ffmpeg/bin")
+}
+
 Write-Host "Building version $Version ..."
 pyinstaller `
   --noconfirm `
   --windowed `
   --name Shengxi `
   --paths "$RootDir" `
-  --add-data "app/static;app/static" `
+  @AddDataArgs `
   --collect-data setuptools `
   --collect-all mcp `
   --collect-all edge_tts `
@@ -34,7 +42,10 @@ if (-not (Test-Path $Dist)) { throw "Build output not found: $Dist" }
 $ZipPath = Join-Path $RootDir ("dist\Shengxi-" + $Version + "-win64.zip")
 if (Test-Path $ZipPath) { Remove-Item $ZipPath }
 Compress-Archive -Path (Join-Path $Dist "*") -DestinationPath $ZipPath
+$Hash = (Get-FileHash -Path $ZipPath -Algorithm SHA256).Hash.ToLower()
+$ShaPath = "$ZipPath.sha256"
+Set-Content -Path $ShaPath -Value "$Hash  $(Split-Path -Leaf $ZipPath)" -Encoding Ascii
 
 Write-Host "Built folder: $Dist"
 Write-Host "Distributable zip: $ZipPath"
-Write-Host "Note: the end user still needs FFmpeg on PATH for MP3/M4B export."
+Write-Host "SHA256: $Hash"
