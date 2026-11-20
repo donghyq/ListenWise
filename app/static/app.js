@@ -636,6 +636,7 @@ async function openProject(projectId) {
     appState.selectedContentId = null;
     $('#project-detail').classList.remove('hidden');
     document.body.classList.add('in-project', 'in-shelf');
+    syncTopNavActive();
     renderProjectDetail();
     syncUrlHash();
     updateGlobalMiniPlayer();
@@ -670,6 +671,7 @@ function closeProject() {
   $('#project-detail').classList.add('hidden'); $('#project-detail').innerHTML = '';
   document.body.classList.remove('in-project');
   document.body.classList.add('in-shelf');
+  syncTopNavActive();
   renderProjectList();
   syncUrlHash();
   updateGlobalMiniPlayer();
@@ -683,6 +685,7 @@ function showShelf(openDialog = false) {
   document.body.classList.add('in-shelf');
   $('#project-detail').classList.add('hidden');
   appState.selectedProjectId = null; appState.selectedProject = null; appState.selectedDocument = null;
+  syncTopNavActive();
   renderProjectList();
   syncUrlHash();
   updateGlobalMiniPlayer();
@@ -690,17 +693,35 @@ function showShelf(openDialog = false) {
   if (openDialog) $('#project-dialog')?.showModal();
 }
 
-function goHome() {
+function goHome(scrollToGuide = false) {
   if (!confirmLeaveProject()) return;
+  const alreadyHome = !document.body.classList.contains('in-shelf') && !document.body.classList.contains('in-project');
   clearProjectDrafts();
   document.body.classList.remove('in-shelf', 'in-project');
   $('#project-detail').classList.add('hidden');
   appState.selectedProjectId = null; appState.selectedProject = null;
+  syncTopNavActive();
   syncUrlHash('#/home');
   updateGlobalMiniPlayer();
-  window.scrollTo({ top: 0 });
+  if (scrollToGuide || alreadyHome) {
+    const guide = $('#workflow');
+    if (guide) {
+      setTimeout(() => guide.scrollIntoView({ behavior: 'smooth', block: 'start' }), 20);
+    } else {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  } else {
+    window.scrollTo({ top: 0 });
+  }
   // 回主页时刷新试听区，让刚生成的音频不必重启就能出现
   appState.projects?.length && initListenSection();
+}
+
+function syncTopNavActive() {
+  const inShelf = document.body.classList.contains('in-shelf');
+  const inProject = document.body.classList.contains('in-project');
+  $('#nav-shelf')?.classList.toggle('active', inShelf && !inProject);
+  $('#nav-home')?.classList.toggle('active', !inShelf && !inProject);
 }
 
 let suppressHashRoute = false;
@@ -3292,17 +3313,18 @@ async function boot() {
   enhanceSelects();
   new MutationObserver(() => { enhanceSelects(); $$('.select-box select').forEach(syncSelectBox); }).observe(document.body, { childList: true, subtree: true });
   $('#nav-shelf')?.addEventListener('click', event => { event.preventDefault(); showShelf(); });
-  $('#nav-home')?.addEventListener('click', event => { event.preventDefault(); goHome(); });
-  $('#back-home')?.addEventListener('click', goHome);
+  $('#nav-home')?.addEventListener('click', event => { event.preventDefault(); goHome(true); });
+  $('#back-home')?.addEventListener('click', () => goHome(false));
   $('#hero-open-shelf')?.addEventListener('click', event => { event.preventDefault(); showShelf(); $('#quick-link-input')?.focus(); });
   $('.brand')?.addEventListener('click', event => {
     event.preventDefault();
     if ((appState.projects || []).length > 0 && !document.body.classList.contains('in-shelf')) showShelf();
     else if (document.body.classList.contains('in-project')) showShelf();
-    else goHome();
+    else goHome(false);
   });
   initDesktopSleepTimer();
   bindKeyboardShortcuts();
+  syncTopNavActive();
   window.addEventListener('hashchange', applyRouteFromHash);
   if (window.location.protocol === 'file:') {
     showMessage('你正在打开源码页面。请打开已安装的声息 app 使用完整功能。', true);

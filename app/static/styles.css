@@ -412,7 +412,7 @@ body.in-project .footer,
 body.in-project .workspace-top,
 body.in-project #project-list,
 body.in-project #daily-brief-list { display: none; }
-body.in-project header nav { visibility: hidden; }
+body.in-project header nav { visibility: visible; }
 body.in-project #workspace { max-width: min(1560px, 96vw); padding-top: 24px; }
 body.in-project #workspace .eyebrow { display: none; }
 body.in-project .project-detail { margin-top: 0; }
@@ -568,7 +568,8 @@ body { background-color: var(--linen); background-image: url("data:image/svg+xml
 /* 文字导航：字距 + 悬停下划线 */
 .nav nav a { position: relative; padding: 4px 1px; letter-spacing: 0.16em; font-size: 14px; color: #5c5443; }
 .nav nav a::after { content: ""; position: absolute; left: 0; right: 100%; bottom: -3px; height: 1.5px; background: var(--tea); transition: right 0.22s ease; }
-.nav nav a:hover::after { right: 0; }
+.nav nav a:hover::after, .nav nav a.active::after { right: 0; }
+.nav nav a.active { color: #2f291e; font-weight: 600; }
 
 /* 橄榄绿胶囊主按钮 */
 .button-primary { background: var(--moss); border-color: var(--moss); border-radius: 999px; box-shadow: 0 8px 18px rgba(111, 125, 84, 0.24); }
